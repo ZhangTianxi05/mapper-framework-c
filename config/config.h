@@ -1,6 +1,10 @@
 #ifndef COMMON_CONFIG_H
 #define COMMON_CONFIG_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef struct {
     char socket_path[256];
 } GRPCServerConfig;
@@ -23,5 +27,9 @@ typedef struct {
 Config* config_parse(const char *filename);
 
 void config_free(Config *cfg);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

@@ -3,7 +3,7 @@
 #include "config/config.h"
 
 int main() {
-    Config *cfg = config_parse("config/config.yaml");
+    Config *cfg = config_parse("../config.yaml");
     if (!cfg) {
         printf("Failed to parse config\n");
         return 1;

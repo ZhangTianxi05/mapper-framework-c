@@ -1,9 +1,9 @@
 cmake_minimum_required(VERSION 3.10)
-project(mapper_framework_c C )
+project(mapper_framework_c C CXX)
 
 set(CMAKE_C_STANDARD 99)
+set(CMAKE_CXX_STANDARD 14)
 
-# 查找依赖库
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(YAML REQUIRED yaml-0.1)
 
@@ -24,10 +24,11 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/util/parse
     ${CMAKE_CURRENT_SOURCE_DIR}/dmi/v1beta1
     ${CMAKE_CURRENT_SOURCE_DIR}/google/protobuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/grpcclient
 )
 
-# 源文件
-set(SRC
+# C 源文件
+set(C_SRC
     main.c
     config/config.c
     log/log.c
@@ -40,13 +41,21 @@ set(SRC
     google/protobuf/wrappers.pb-c.c
 )
 
-# 主程序
-add_executable(main ${SRC})
+# C++ 源文件
+set(CPP_SRC
+    grpcclient/register.cpp
+    grpcclient/report.cpp
+)
+
+# 主程序（C 和 C++ 混合）
+add_executable(main ${C_SRC} ${CPP_SRC})
 
 target_link_libraries(main
     ${CJSON_LIBRARIES}
     ${YAML_LIBRARIES}
     ${PROTOBUF_C_LIBRARIES}
+    grpc++
+    protobuf
     pthread
 )
 
