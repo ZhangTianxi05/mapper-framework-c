@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.10)
 project(mapper_framework_c C CXX)
 
 set(CMAKE_C_STANDARD 99)
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 20)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(YAML REQUIRED yaml-0.1)
@@ -25,8 +25,10 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/dmi/v1beta1
     ${CMAKE_CURRENT_SOURCE_DIR}/google/protobuf
     ${CMAKE_CURRENT_SOURCE_DIR}/grpcclient
+    ${CMAKE_CURRENT_SOURCE_DIR}/httpserver
+    /usr/include
+    /usr/local/include
 )
-
 # C 源文件
 set(C_SRC
     main.c
@@ -39,24 +41,8 @@ set(C_SRC
     dmi/v1beta1/api.pb-c.c
     google/protobuf/any.pb-c.c
     google/protobuf/wrappers.pb-c.c
-)
-
-# C++ 源文件
-set(CPP_SRC
-    grpcclient/register.cpp
-    grpcclient/report.cpp
-)
-
-# 主程序（C 和 C++ 混合）
-add_executable(main ${C_SRC} ${CPP_SRC})
-
-target_link_libraries(main
-    ${CJSON_LIBRARIES}
-    ${YAML_LIBRARIES}
-    ${PROTOBUF_C_LIBRARIES}
-    grpc++
-    protobuf
-    pthread
+    httpserver/httpserver.c
+    global/global.c
 )
 
 # 测试程序
@@ -73,11 +59,14 @@ foreach(testfile ${TEST_SRC})
         dmi/v1beta1/api.pb-c.c
         google/protobuf/any.pb-c.c
         google/protobuf/wrappers.pb-c.c
+        httpserver/httpserver.c
+        global/global.c
     )
     target_link_libraries(${testname}
         ${CJSON_LIBRARIES}
         ${YAML_LIBRARIES}
         ${PROTOBUF_C_LIBRARIES}
+        microhttpd
         pthread
     )
 endforeach()

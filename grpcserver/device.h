@@ -1,50 +1,27 @@
-#pragma once
+#ifndef GRPCSERVER_DEVICE_H
+#define GRPCSERVER_DEVICE_H
 
-#include "dmi/v1beta1/api.grpc.pb.h"
-#include <memory>
+#include "dmi/v1beta1/api.pb-c.h"
 
-// 前置声明
-class DevicePanel;
-class DeviceModel;
-class DeviceInstance;
-class ProtocolConfig;
+// 前向声明
+typedef struct DevPanel DevPanel;
 
-// 设备服务实现，继承 proto 生成的 Service
-class DeviceServiceImpl : public v1beta1::DeviceMapperService::Service {
-public:
-    // 构造函数
-    explicit DeviceServiceImpl(std::shared_ptr<DevicePanel> dev_panel)
-        : dev_panel_(dev_panel) {}
+// 设备服务结构体
+typedef struct {
+    DevPanel *dev_panel;
+} DeviceService;
 
-    // gRPC 方法实现
-    grpc::Status RegisterDevice(grpc::ServerContext* context,
-                               const v1beta1::RegisterDeviceRequest* request,
-                               v1beta1::RegisterDeviceResponse* response) override;
+// 创建/销毁服务
+DeviceService *device_service_new(DevPanel *panel);
+void device_service_free(DeviceService *svc);
 
-    grpc::Status RemoveDevice(grpc::ServerContext* context,
-                              const v1beta1::RemoveDeviceRequest* request,
-                              v1beta1::RemoveDeviceResponse* response) override;
+// gRPC接口
+int device_register(DeviceService *svc, const V1beta1__RegisterDeviceRequest *req, V1beta1__RegisterDeviceResponse *resp);
+int device_remove(DeviceService *svc, const V1beta1__RemoveDeviceRequest *req, V1beta1__RemoveDeviceResponse *resp);
+int device_update(DeviceService *svc, const V1beta1__UpdateDeviceRequest *req, V1beta1__UpdateDeviceResponse *resp);
+int device_create_model(DeviceService *svc, const V1beta1__CreateDeviceModelRequest *req, V1beta1__CreateDeviceModelResponse *resp);
+int device_update_model(DeviceService *svc, const V1beta1__UpdateDeviceModelRequest *req, V1beta1__UpdateDeviceModelResponse *resp);
+int device_remove_model(DeviceService *svc, const V1beta1__RemoveDeviceModelRequest *req, V1beta1__RemoveDeviceModelResponse *resp);
+int device_get(DeviceService *svc, const V1beta1__GetDeviceRequest *req, V1beta1__GetDeviceResponse *resp);
 
-    grpc::Status UpdateDevice(grpc::ServerContext* context,
-                              const v1beta1::UpdateDeviceRequest* request,
-                              v1beta1::UpdateDeviceResponse* response) override;
-
-    grpc::Status CreateDeviceModel(grpc::ServerContext* context,
-                                   const v1beta1::CreateDeviceModelRequest* request,
-                                   v1beta1::CreateDeviceModelResponse* response) override;
-
-    grpc::Status UpdateDeviceModel(grpc::ServerContext* context,
-                                   const v1beta1::UpdateDeviceModelRequest* request,
-                                   v1beta1::UpdateDeviceModelResponse* response) override;
-
-    grpc::Status RemoveDeviceModel(grpc::ServerContext* context,
-                                   const v1beta1::RemoveDeviceModelRequest* request,
-                                   v1beta1::RemoveDeviceModelResponse* response) override;
-
-    grpc::Status GetDevice(grpc::ServerContext* context,
-                           const v1beta1::GetDeviceRequest* request,
-                           v1beta1::GetDeviceResponse* response) override;
-
-private:
-    std::shared_ptr<DevicePanel> dev_panel_;
-};
+#endif // GRPCSERVER_DEVICE_H

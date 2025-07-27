@@ -1,5 +1,5 @@
 grpc_server:
-  socket_path: /etc/kubeedge/arduino.sock
+  socket_path: /etc/kubeedge/dmi.sock
 common:
   name: arduino-mapper
   version: v1.13.0

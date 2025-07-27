@@ -238,3 +238,6 @@ int get_device_from_grpc(const V1beta1__Device *device, const DeviceModel *commo
     log_info("final instance data from grpc built");
     return 0;
 }
+void get_resource_id(const char *namespace, const char *name, char *out, size_t outlen) {
+    snprintf(out, outlen, "%s.%s", namespace, name);
+}

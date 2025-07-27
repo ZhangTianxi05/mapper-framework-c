@@ -19,3 +19,6 @@ export HTTP_PROXY=http://127.0.0.1:7890/
 export HTTPS_PROXY=http://127.0.0.1:7890/
 export NO_PROXY=localhost,127.0.0.1,192.168.49.2
 minikube start --docker-env HTTP_PROXY=$HTTP_PROXY --docker-env HTTPS_PROXY=$HTTPS_PROXY --docker-env NO_PROXY=$NO_PROXY
+
+
+给出register修改后的完整代码，可以充分利用我common里的代码，同时严格仿照go代码
