@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include "cJSON.h"
+#include <cjson/cJSON.h>
 #include "util/parse/grpc.h"
 #include "common/datamodel.h"
 #include "common/datamethod.h"
@@ -59,7 +59,7 @@ static int handle_device_read(RestServer *server, struct MHD_Connection *connect
     char *value = NULL, *datatype = NULL;
     int err = dev_panel_get_twin_result(server->dev_panel, deviceID, property, &value, &datatype);
     if (err != 0) {
-        char msg[256];
+        char msg[512];
         snprintf(msg, sizeof(msg), "Get device data error: %d", err);
         struct MHD_Response *response = MHD_create_response_from_buffer(strlen(msg), (void*)msg, MHD_RESPMEM_PERSISTENT);
         int ret = MHD_queue_response(connection, MHD_HTTP_INTERNAL_SERVER_ERROR, response);
@@ -100,14 +100,14 @@ static int handle_device_write(RestServer *server, struct MHD_Connection *connec
     cJSON_AddNumberToObject(resp, "statusCode", err == 0 ? 200 : 500);
     cJSON_AddStringToObject(resp, "timeStamp", timebuf);
     if (err == 0) {
-        char msg[256];
+        char msg[512];
         snprintf(msg, sizeof(msg), "Write data %s to device %s successfully.", data, deviceID);
         cJSON_AddStringToObject(resp, "message", msg);
         int ret = send_json_response(connection, resp, MHD_HTTP_OK);
         cJSON_Delete(resp);
         return ret;
     } else {
-        char msg[256];
+        char msg[512];
         snprintf(msg, sizeof(msg), "Write device data error: %d", err);
         cJSON_AddStringToObject(resp, "message", msg);
         int ret = send_json_response(connection, resp, MHD_HTTP_INTERNAL_SERVER_ERROR);
@@ -120,13 +120,13 @@ static int handle_device_write(RestServer *server, struct MHD_Connection *connec
 static int handle_get_device_method(RestServer *server, struct MHD_Connection *connection, const char *namespace, const char *name) {
     char deviceID[256];
     get_resource_id(namespace, name, deviceID, sizeof(deviceID));
-    char ***method_map = NULL;
+    char **method_map = NULL;
     int method_count = 0;
-    char ***property_map = NULL;
+    char **property_map = NULL;
     int property_count = 0;
     int err = dev_panel_get_device_method(server->dev_panel, deviceID, &method_map, &method_count, &property_map, &property_count);
     if (err != 0) {
-        char msg[256];
+        char msg[512];
         snprintf(msg, sizeof(msg), "Get device method error: %d", err);
         struct MHD_Response *response = MHD_create_response_from_buffer(strlen(msg), (void*)msg, MHD_RESPMEM_PERSISTENT);
         int ret = MHD_queue_response(connection, MHD_HTTP_INTERNAL_SERVER_ERROR, response);
@@ -185,7 +185,7 @@ static int handle_meta_get_model(RestServer *server, struct MHD_Connection *conn
     DeviceInstance instance = {0};
     int err = dev_panel_get_device(server->dev_panel, deviceID, &instance);
     if (err != 0) {
-        char msg[256];
+        char msg[512];
         snprintf(msg, sizeof(msg), "Get device error: %d", err);
         struct MHD_Response *response = MHD_create_response_from_buffer(strlen(msg), (void*)msg, MHD_RESPMEM_PERSISTENT);
         int ret = MHD_queue_response(connection, MHD_HTTP_INTERNAL_SERVER_ERROR, response);
@@ -197,7 +197,7 @@ static int handle_meta_get_model(RestServer *server, struct MHD_Connection *conn
     DeviceModel model = {0};
     err = dev_panel_get_model(server->dev_panel, modelID, &model);
     if (err != 0) {
-        char msg[256];
+        char msg[512];
         snprintf(msg, sizeof(msg), "Get device model error: %d", err);
         struct MHD_Response *response = MHD_create_response_from_buffer(strlen(msg), (void*)msg, MHD_RESPMEM_PERSISTENT);
         int ret = MHD_queue_response(connection, MHD_HTTP_INTERNAL_SERVER_ERROR, response);
@@ -238,7 +238,7 @@ static int handle_database_get_data(RestServer *server, struct MHD_Connection *c
 }
 
 // 路由分发
-static int router_callback(void *cls, struct MHD_Connection *connection,
+static enum MHD_Result router_callback(void *cls, struct MHD_Connection *connection,
                            const char *url, const char *method,
                            const char *version, const char *upload_data,
                            size_t *upload_data_size, void **con_cls) {

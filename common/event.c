@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <time.h>
-#include "cJSON.h"
+#include <cjson/cJSON.h>
 
 // Get current timestamp in milliseconds
 #include <sys/time.h>

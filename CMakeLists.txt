@@ -26,11 +26,35 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/google/protobuf
     ${CMAKE_CURRENT_SOURCE_DIR}/grpcclient
     ${CMAKE_CURRENT_SOURCE_DIR}/httpserver
+    ${CMAKE_CURRENT_SOURCE_DIR}/data/dbmethod/mysql
     /usr/include
     /usr/local/include
 )
-# C 源文件
-set(C_SRC
+
+# absl 库列表（如有其它符号报错可补充）
+set(ABSL_LIBS
+    absl_log_internal_check_op
+    absl_log_internal_message
+    absl_log_internal_format
+    absl_log_internal_globals
+    absl_log_internal_proto
+    absl_log_internal_nullguard
+    absl_synchronization
+    absl_time
+    absl_strings
+    absl_status
+    absl_base
+    absl_cord
+    absl_cord_internal
+    absl_cordz_info
+    absl_cordz_handle
+    absl_cordz_functions
+    absl_cordz_sample_token
+    absl_hash
+)
+
+# 主程序
+add_executable(main
     main.c
     config/config.c
     log/log.c
@@ -39,10 +63,30 @@ set(C_SRC
     common/event.c
     util/parse/grpc.c
     dmi/v1beta1/api.pb-c.c
+    dmi/v1beta1/api.pb.cc
+    dmi/v1beta1/api.grpc.pb.cc
     google/protobuf/any.pb-c.c
     google/protobuf/wrappers.pb-c.c
     httpserver/httpserver.c
     global/global.c
+    grpcclient/register.cc
+    data/dbmethod/mysql/mysql_client.c      # <--- 加上这行
+    data/dbmethod/mysql/handler.c 
+)
+
+target_link_libraries(main
+    ${CJSON_LIBRARIES}
+    ${YAML_LIBRARIES}
+    ${PROTOBUF_C_LIBRARIES}
+    mysqlclient
+    microhttpd
+    grpc++
+    grpc
+    gpr
+    protobuf
+    yaml
+    ${ABSL_LIBS}
+    pthread
 )
 
 # 测试程序
@@ -56,17 +100,29 @@ foreach(testfile ${TEST_SRC})
         common/datamodel.c
         common/event.c
         util/parse/grpc.c
+        dmi/v1beta1/api.pb.cc
+        dmi/v1beta1/api.grpc.pb.cc
         dmi/v1beta1/api.pb-c.c
         google/protobuf/any.pb-c.c
         google/protobuf/wrappers.pb-c.c
         httpserver/httpserver.c
         global/global.c
+        grpcclient/register.cc
+        data/dbmethod/mysql/mysql_client.c      # <--- 加上这行
+        data/dbmethod/mysql/handler.c 
     )
     target_link_libraries(${testname}
         ${CJSON_LIBRARIES}
         ${YAML_LIBRARIES}
         ${PROTOBUF_C_LIBRARIES}
+        mysqlclient
         microhttpd
+        grpc++
+        grpc
+        gpr
+        protobuf
+        yaml
+        ${ABSL_LIBS}
         pthread
     )
 endforeach()

@@ -35,27 +35,27 @@ typedef struct {
     char *unit;         // Unit
 } ModelProperty;
 
-// PushMethodConfig stores push configuration.
-typedef struct {
-    char *methodName;           // Push method name
-    char *methodConfig;         // Push method config, recommended as JSON string
-    struct DBMethodConfig *dbMethod; // Pointer to database method config
-} PushMethodConfig;
-
-// DBMethodConfig stores database method configuration.
-typedef struct {
-    char *dbMethodName;     // Database method name
-    struct DBConfig *dbConfig; // Pointer to database config
-} DBMethodConfig;
-
 // DBConfig stores database configuration.
-typedef struct {
+typedef struct DBConfig {
     char *influxdb2ClientConfig;   // InfluxDB2 client config (JSON string)
     char *influxdb2DataConfig;     // InfluxDB2 data config (JSON string)
     char *redisClientConfig;       // Redis client config (JSON string)
     char *tdengineClientConfig;    // TDengine client config (JSON string)
     char *mysqlClientConfig;       // MySQL client config (JSON string)
 } DBConfig;
+
+// DBMethodConfig stores database method configuration.
+typedef struct {
+    char *dbMethodName;     // Database method name
+    DBConfig *dbConfig;     // Pointer to database config
+} DBMethodConfig;
+
+// PushMethodConfig stores push configuration.
+typedef struct {
+    char *methodName;           // Push method name
+    char *methodConfig;         // Push method config, recommended as JSON string
+    DBMethodConfig *dbMethod;   // Pointer to database method config
+} PushMethodConfig;
 
 // DeviceProperty stores property visitor information in device.
 typedef struct {
@@ -118,4 +118,4 @@ typedef struct {
     int propertiesCount;        // Number of properties
 } DeviceModel;
 
-#endif // CONFIGMAPTYPE_H
+#endif // COMMON_CONFIGMAPTYPE_H

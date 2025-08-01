@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
-#include "cJSON.h"
+#include <cjson/cJSON.h>
 
 static char *strdup_safe(const char *s) {
     if (!s) return NULL;
@@ -238,6 +238,6 @@ int get_device_from_grpc(const V1beta1__Device *device, const DeviceModel *commo
     log_info("final instance data from grpc built");
     return 0;
 }
-void get_resource_id(const char *namespace, const char *name, char *out, size_t outlen) {
-    snprintf(out, outlen, "%s.%s", namespace, name);
+void get_resource_id(const char *ns, const char *name, char *out, size_t outlen) {
+    snprintf(out, outlen, "%s.%s",ns, name);
 }
