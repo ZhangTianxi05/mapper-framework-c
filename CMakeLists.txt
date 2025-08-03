@@ -8,6 +8,8 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(YAML REQUIRED yaml-0.1)
 
 # 手动指定 cJSON 头文件和库
+find_package(CURL REQUIRED)
+
 include_directories(/usr/include/cjson)
 include_directories(/usr/local/include/protobuf-c)
 
@@ -27,6 +29,8 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/grpcclient
     ${CMAKE_CURRENT_SOURCE_DIR}/httpserver
     ${CMAKE_CURRENT_SOURCE_DIR}/data/dbmethod/mysql
+    ${CMAKE_CURRENT_SOURCE_DIR}/data/dbmethod/influxdb2
+    ${CMAKE_CURRENT_SOURCE_DIR}/driver
     /usr/include
     /usr/local/include
 )
@@ -70,14 +74,18 @@ add_executable(main
     httpserver/httpserver.c
     global/global.c
     grpcclient/register.cc
-    data/dbmethod/mysql/mysql_client.c      # <--- 加上这行
+    data/dbmethod/mysql/mysql_client.c
     data/dbmethod/mysql/handler.c 
+    data/dbmethod/influxdb2/influxdb2_client.c
+    data/dbmethod/influxdb2/handler.c 
+    driver/driver.c
 )
 
 target_link_libraries(main
     ${CJSON_LIBRARIES}
     ${YAML_LIBRARIES}
     ${PROTOBUF_C_LIBRARIES}
+    ${CURL_LIBRARIES}
     mysqlclient
     microhttpd
     grpc++
@@ -108,13 +116,17 @@ foreach(testfile ${TEST_SRC})
         httpserver/httpserver.c
         global/global.c
         grpcclient/register.cc
-        data/dbmethod/mysql/mysql_client.c      # <--- 加上这行
+        data/dbmethod/mysql/mysql_client.c
         data/dbmethod/mysql/handler.c 
+        data/dbmethod/influxdb2/influxdb2_client.c
+        data/dbmethod/influxdb2/handler.c 
+        driver/driver.c
     )
     target_link_libraries(${testname}
         ${CJSON_LIBRARIES}
         ${YAML_LIBRARIES}
         ${PROTOBUF_C_LIBRARIES}
+        ${CURL_LIBRARIES}
         mysqlclient
         microhttpd
         grpc++

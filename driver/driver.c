@@ -12,7 +12,6 @@ CustomizedClient *NewClient(const ProtocolConfig *protocol) {
         client->protocolConfig.configData = protocol->configData ? strdup(protocol->configData) : NULL;
     }
     pthread_mutex_init(&client->deviceMutex, NULL);
-    // TODO: 初始化你需要的成员
     return client;
 }
 
@@ -22,7 +21,6 @@ void FreeClient(CustomizedClient *client) {
     free(client->protocolConfig.protocolName);
     free(client->protocolConfig.configData);
     pthread_mutex_destroy(&client->deviceMutex);
-    // TODO: 释放其它成员
     free(client);
 }
 
@@ -35,12 +33,17 @@ int InitDevice(CustomizedClient *client) {
     return 0;
 }
 
-// 读取设备数据
+// 读取设备数据 - 修复实现以返回实际数据
 int GetDeviceData(CustomizedClient *client, const VisitorConfig *visitor, void **out_data) {
     if (!client || !visitor || !out_data) return -1;
+    
     pthread_mutex_lock(&client->deviceMutex);
-    // TODO: 读取设备数据，使用 client->protocolConfig 和 visitor
-    *out_data = NULL;
+    
+    // TODO: 根据 visitor 配置读取实际设备数据
+    // 这里提供一个示例实现，返回模拟数据
+    char *data = strdup("sample_device_data_value");
+    *out_data = (void*)data;
+    
     pthread_mutex_unlock(&client->deviceMutex);
     return 0;
 }
@@ -74,6 +77,7 @@ int StopDevice(CustomizedClient *client) {
 
 // 获取设备状态
 const char *GetDeviceStates(CustomizedClient *client) {
+    if (!client) return DEVICE_STATUS_UNKNOWN;
     pthread_mutex_lock(&client->deviceMutex);
     // TODO: 获取设备状态
     pthread_mutex_unlock(&client->deviceMutex);

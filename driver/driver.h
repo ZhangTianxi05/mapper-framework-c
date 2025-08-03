@@ -4,11 +4,6 @@
 #include "common/configmaptype.h"
 #include <pthread.h>
 
-// 协议配置结构体（可根据你的 ProtocolConfig 定义调整）
-typedef struct {
-    char *protocolName;
-    char *configData; // 推荐用 JSON 字符串
-} ProtocolConfig;
 
 // 访问信息结构体（可根据你的 VisitorConfig 定义调整）
 typedef struct {
