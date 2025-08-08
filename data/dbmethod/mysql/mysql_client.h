@@ -15,10 +15,10 @@ typedef struct {
 typedef struct {
     MySQLClientConfig config;
     MYSQL *conn;
-} DataBaseConfig;
+} MySQLDataBaseConfig;  // 重命名：DataBaseConfig -> MySQLDataBaseConfig
 
 typedef struct {
-    DataBaseConfig dbConfig;
+    MySQLDataBaseConfig dbConfig;  // 更新类型
     DataModel *dataModel;
     int reportCycleMs;
     CustomizedClient *customizedClient;
@@ -28,14 +28,14 @@ typedef struct {
 
 // MySQL 客户端函数
 int mysql_parse_client_config(const char *json, MySQLClientConfig *out);
-int mysql_init_client(DataBaseConfig *db);
-void mysql_close_client(DataBaseConfig *db);
-int mysql_add_data(DataBaseConfig *db, const DataModel *data);
+int mysql_init_client(MySQLDataBaseConfig *db);         // 更新参数类型
+void mysql_close_client(MySQLDataBaseConfig *db);       // 更新参数类型
+int mysql_add_data(MySQLDataBaseConfig *db, const DataModel *data);  // 更新参数类型
 
 // MySQL 数据处理函数
 int StartMySQLDataHandler(const char *clientConfigJson, DataModel *dataModel, CustomizedClient *customizedClient, VisitorConfig *visitorConfig, int reportCycleMs);
 int StopMySQLDataHandler(MySQLDataHandlerArgs *args);
-DataBaseConfig* NewMySQLDataBaseClient(const char *configJson);
-void FreeMySQLDataBaseClient(DataBaseConfig *dbConfig);
+MySQLDataBaseConfig* NewMySQLDataBaseClient(const char *configJson);
+void FreeMySQLDataBaseClient(MySQLDataBaseConfig *dbConfig);
 
 #endif

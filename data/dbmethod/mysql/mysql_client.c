@@ -20,7 +20,7 @@ int mysql_parse_client_config(const char *json, MySQLClientConfig *out) {
     return 0;
 }
 
-int mysql_init_client(DataBaseConfig *db) {
+int mysql_init_client(MySQLDataBaseConfig *db) {
     db->conn = mysql_init(NULL);
     if (!db->conn) {
         log_error("mysql_init failed");
@@ -35,14 +35,14 @@ int mysql_init_client(DataBaseConfig *db) {
     return 0;
 }
 
-void mysql_close_client(DataBaseConfig *db) {
+void mysql_close_client(MySQLDataBaseConfig *db) {
     if (db->conn) {
         mysql_close(db->conn);
         db->conn = NULL;
     }
 }
 
-int mysql_add_data(DataBaseConfig *db, const DataModel *data) {
+int mysql_add_data(MySQLDataBaseConfig *db, const DataModel *data) {
     if (!db || !db->conn || !data) return -1;
     char tableName[256];
     snprintf(tableName, sizeof(tableName), "%s/%s/%s", data->namespace_, data->deviceName, data->propertyName);

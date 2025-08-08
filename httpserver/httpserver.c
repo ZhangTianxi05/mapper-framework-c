@@ -7,6 +7,8 @@
 #include "util/parse/grpc.h"
 #include "common/datamodel.h"
 #include "common/datamethod.h"
+#include "device/device.h"
+#include "device/dev_panel.h"
 #include "log/log.h"
 
 // 路由常量
@@ -143,21 +145,28 @@ static int handle_get_device_method(RestServer *server, struct MHD_Connection *c
 
     cJSON *data = cJSON_CreateObject();
     cJSON *methods = cJSON_CreateArray();
-    for (int i = 0; i < method_count; ++i) {
+for (int i = 0; i < method_count; ++i) {
         cJSON *method = cJSON_CreateObject();
-        cJSON_AddStringToObject(method, "name", method_map[i][0]);
+        
+        // 修正：直接使用字符串指针，不是数组的数组
+        cJSON_AddStringToObject(method, "name", method_map[i]);
+        
         // 路径格式
         char path[256];
-        snprintf(path, sizeof(path), API_DEVICE_METHOD "/%s/%s/%s/{propertyName}/{data}", namespace, name, method_map[i][0]);
+        snprintf(path, sizeof(path), API_DEVICE_METHOD "/%s/%s/%s/{propertyName}/{data}", 
+                 namespace, name, method_map[i]);
         cJSON_AddStringToObject(method, "path", path);
+        
         cJSON *params = cJSON_CreateArray();
-        for (int j = 0; property_map[i][j]; ++j) {
+        
+        // 修正：简化属性处理，假设每个方法对应一个属性
+        if (i < property_count) {
             cJSON *param = cJSON_CreateObject();
-            cJSON_AddStringToObject(param, "propertyName", property_map[i][j]);
-            // 这里假设 property_map[i][j] 就是属性名，类型可扩展
+            cJSON_AddStringToObject(param, "propertyName", property_map[i]);
             cJSON_AddStringToObject(param, "valueType", "string");
             cJSON_AddItemToArray(params, param);
         }
+        
         cJSON_AddItemToObject(method, "parameters", params);
         cJSON_AddItemToArray(methods, method);
     }
@@ -166,15 +175,17 @@ static int handle_get_device_method(RestServer *server, struct MHD_Connection *c
 
     int ret = send_json_response(connection, resp, MHD_HTTP_OK);
     cJSON_Delete(resp);
-    // 释放 method_map/property_map
+    // 清理资源 - 修正：释放字符串指针
     for (int i = 0; i < method_count; ++i) {
-        for (int j = 0; property_map[i][j]; ++j) free(property_map[i][j]);
-        free(property_map[i]);
-        free(method_map[i][0]);
         free(method_map[i]);
     }
-    free(property_map);
     free(method_map);
+    
+    for (int i = 0; i < property_count; ++i) {
+        free(property_map[i]);
+    }
+    free(property_map);
+
     return ret;
 }
 
@@ -292,7 +303,7 @@ static enum MHD_Result router_callback(void *cls, struct MHD_Connection *connect
     return ret;
 }
 
-RestServer *rest_server_new(DevPanel *panel, const char *port) {
+RestServer *rest_server_new(DeviceManager *panel, const char *port) {
     RestServer *server = calloc(1, sizeof(RestServer));
     strcpy(server->ip, "0.0.0.0");
     strcpy(server->port, port ? port : "7777");

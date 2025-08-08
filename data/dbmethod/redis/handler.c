@@ -118,7 +118,7 @@ int StopRedisDataHandler(RedisDataHandlerArgs *args) {
 }
 
 // 创建 Redis 数据库客户端
-DataBaseConfig* NewRedisDataBaseClient(const char *configJson) {
+RedisDataBaseConfig* NewRedisDataBaseClient(const char *configJson) {
     if (!configJson) {
         log_error("Redis config JSON is null");
         return NULL;
@@ -130,7 +130,7 @@ DataBaseConfig* NewRedisDataBaseClient(const char *configJson) {
         return NULL;
     }
     
-    DataBaseConfig *dbConfig = calloc(1, sizeof(DataBaseConfig));
+    RedisDataBaseConfig *dbConfig = calloc(1, sizeof(RedisDataBaseConfig));
     if (!dbConfig) {
         log_error("Failed to allocate memory for Redis database config");
         free(clientCfg.addr);
@@ -152,7 +152,7 @@ DataBaseConfig* NewRedisDataBaseClient(const char *configJson) {
 }
 
 // 释放 Redis 数据库客户端
-void FreeRedisDataBaseClient(DataBaseConfig *dbConfig) {
+void FreeRedisDataBaseClient(RedisDataBaseConfig *dbConfig) {
     if (!dbConfig) return;
     
     redis_close_client(dbConfig);

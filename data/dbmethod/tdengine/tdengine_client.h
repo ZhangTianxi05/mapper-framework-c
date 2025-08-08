@@ -15,10 +15,10 @@ typedef struct {
 typedef struct {
     TDEngineClientConfig config;
     TAOS *conn;
-} DataBaseConfig;
+} TDEngineDataBaseConfig;
 
 typedef struct {
-    DataBaseConfig dbConfig;
+    TDEngineDataBaseConfig dbConfig;
     DataModel *dataModel;
     int reportCycleMs;
     CustomizedClient *customizedClient;
@@ -28,16 +28,16 @@ typedef struct {
 
 // TDengine 客户端函数
 int tdengine_parse_client_config(const char *json, TDEngineClientConfig *out);
-int tdengine_init_client(DataBaseConfig *db);
-void tdengine_close_client(DataBaseConfig *db);
-int tdengine_add_data(DataBaseConfig *db, const DataModel *data);
-int tdengine_get_data_by_device_id(DataBaseConfig *db, const char *deviceID, DataModel ***dataModels, int *count);
-int tdengine_get_data_by_time_range(DataBaseConfig *db, const char *deviceID, int64_t start, int64_t end, DataModel ***dataModels, int *count);
+int tdengine_init_client(TDEngineDataBaseConfig *db);
+void tdengine_close_client(TDEngineDataBaseConfig *db);
+int tdengine_add_data(TDEngineDataBaseConfig *db, const DataModel *data);
+int tdengine_get_data_by_device_id(TDEngineDataBaseConfig *db, const char *deviceID, DataModel ***dataModels, int *count);
+int tdengine_get_data_by_time_range(TDEngineDataBaseConfig *db, const char *deviceID, int64_t start, int64_t end, DataModel ***dataModels, int *count);
 
 // TDengine 数据处理函数
 int StartTDEngineDataHandler(const char *clientConfigJson, DataModel *dataModel, CustomizedClient *customizedClient, VisitorConfig *visitorConfig, int reportCycleMs);
 int StopTDEngineDataHandler(TDEngineDataHandlerArgs *args);
-DataBaseConfig* NewTDEngineDataBaseClient(const char *configJson);
-void FreeTDEngineDataBaseClient(DataBaseConfig *dbConfig);
+TDEngineDataBaseConfig* NewTDEngineDataBaseClient(const char *configJson);
+void FreeTDEngineDataBaseClient(TDEngineDataBaseConfig *dbConfig);
 
 #endif

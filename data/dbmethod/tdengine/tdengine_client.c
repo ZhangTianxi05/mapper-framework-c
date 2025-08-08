@@ -43,7 +43,7 @@ int tdengine_parse_client_config(const char *json, TDEngineClientConfig *out) {
     return 0;
 }
 
-int tdengine_init_client(DataBaseConfig *db) {
+int tdengine_init_client(TDEngineDataBaseConfig *db) {
     if (!db) return -1;
     
     // 初始化 TDengine
@@ -89,7 +89,7 @@ int tdengine_init_client(DataBaseConfig *db) {
     return 0;
 }
 
-void tdengine_close_client(DataBaseConfig *db) {
+void tdengine_close_client(TDEngineDataBaseConfig *db) {
     if (db && db->conn) {
         taos_close(db->conn);
         db->conn = NULL;
@@ -97,7 +97,7 @@ void tdengine_close_client(DataBaseConfig *db) {
     }
 }
 
-int tdengine_add_data(DataBaseConfig *db, const DataModel *data) {
+int tdengine_add_data(TDEngineDataBaseConfig *db, const DataModel *data) {
     if (!db || !db->conn || !data) return -1;
     
     // 构造表名和标签（替换非法字符）
@@ -175,7 +175,7 @@ int tdengine_add_data(DataBaseConfig *db, const DataModel *data) {
     return 0;
 }
 
-int tdengine_get_data_by_device_id(DataBaseConfig *db, const char *deviceID, DataModel ***dataModels, int *count) {
+int tdengine_get_data_by_device_id(TDEngineDataBaseConfig *db, const char *deviceID, DataModel ***dataModels, int *count) {
     if (!db || !db->conn || !deviceID || !dataModels || !count) return -1;
     
     char *legalTable = replace_char(deviceID, '-', '_');
@@ -249,7 +249,7 @@ int tdengine_get_data_by_device_id(DataBaseConfig *db, const char *deviceID, Dat
     return 0;
 }
 
-int tdengine_get_data_by_time_range(DataBaseConfig *db, const char *deviceID, int64_t start, int64_t end, DataModel ***dataModels, int *count) {
+int tdengine_get_data_by_time_range(TDEngineDataBaseConfig *db, const char *deviceID, int64_t start, int64_t end, DataModel ***dataModels, int *count) {
     if (!db || !db->conn || !deviceID || !dataModels || !count) return -1;
     
     char *legalTable = replace_char(deviceID, '-', '_');

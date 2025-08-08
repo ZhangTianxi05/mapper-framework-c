@@ -4,8 +4,10 @@
 #include "common/configmaptype.h"
 #include "common/datamodel.h"
 #include "driver/driver.h"
+#include <pthread.h>
 
-// 前置声明
+// 前置声明 Device 结构体，不重复定义
+struct Device;
 typedef struct Device Device;
 
 // 孪生数据处理结果

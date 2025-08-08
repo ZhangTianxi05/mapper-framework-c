@@ -32,7 +32,7 @@ int redis_parse_client_config(const char *json, RedisClientConfig *out) {
     return 0;
 }
 
-int redis_init_client(DataBaseConfig *db) {
+int redis_init_client(RedisDataBaseConfig *db) {
     if (!db) return -1;
     
     // 解析地址和端口
@@ -103,14 +103,14 @@ int redis_init_client(DataBaseConfig *db) {
     return 0;
 }
 
-void redis_close_client(DataBaseConfig *db) {
+void redis_close_client(RedisDataBaseConfig *db) {
     if (db && db->conn) {
         redisFree(db->conn);
         db->conn = NULL;
     }
 }
 
-int redis_add_data(DataBaseConfig *db, const DataModel *data) {
+int redis_add_data(RedisDataBaseConfig *db, const DataModel *data) {
     if (!db || !db->conn || !data) return -1;
     
     // 构造设备数据字符串
@@ -142,7 +142,7 @@ int redis_add_data(DataBaseConfig *db, const DataModel *data) {
     return 0;
 }
 
-int redis_get_data_by_device_id(DataBaseConfig *db, const char *deviceID, DataModel ***dataModels, int *count) {
+int redis_get_data_by_device_id(RedisDataBaseConfig *db, const char *deviceID, DataModel ***dataModels, int *count) {
     if (!db || !db->conn || !deviceID || !dataModels || !count) return -1;
     
     // 使用 ZREVRANGE 命令获取数据（按时间戳倒序）

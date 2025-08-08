@@ -13,9 +13,14 @@
 #ifdef ENABLE_STREAM
 #include "data/stream/stream.h"
 #endif
+#include <pthread.h>
+
+// 检查是否已定义 Device，避免重复定义
+#ifndef DEVICE_TYPE_DEFINED
+#define DEVICE_TYPE_DEFINED
 
 // 设备核心结构体
-typedef struct {
+typedef struct Device {
     DeviceInstance instance;           // 设备实例信息
     DeviceModel model;                 // 设备模型信息
     CustomizedClient *client;          // 设备客户端
@@ -25,6 +30,8 @@ typedef struct {
     pthread_t dataThread;              // 数据处理线程
     int dataThreadRunning;             // 数据线程运行标志
 } Device;
+
+#endif // DEVICE_TYPE_DEFINED
 
 // 设备管理器结构体
 typedef struct {
@@ -52,7 +59,7 @@ int device_data_process(Device *device, const char *method, const char *config,
 const char *device_get_status(Device *device);
 int device_set_status(Device *device, const char *status);
 
-// 设备管理器
+// 设备管理器（新增函数声明）
 DeviceManager *device_manager_new(void);
 void device_manager_free(DeviceManager *manager);
 int device_manager_add(DeviceManager *manager, Device *device);

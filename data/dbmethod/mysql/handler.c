@@ -126,7 +126,7 @@ int StopMySQLDataHandler(MySQLDataHandlerArgs *args) {
 }
 
 // 创建 MySQL 数据库客户端（基于配置）
-DataBaseConfig* NewMySQLDataBaseClient(const char *configJson) {
+MySQLDataBaseConfig* NewMySQLDataBaseClient(const char *configJson) {
     if (!configJson) {
         log_error("MySQL config JSON is null");
         return NULL;
@@ -138,7 +138,7 @@ DataBaseConfig* NewMySQLDataBaseClient(const char *configJson) {
         return NULL;
     }
     
-    DataBaseConfig *dbConfig = calloc(1, sizeof(DataBaseConfig));
+    MySQLDataBaseConfig *dbConfig = calloc(1, sizeof(MySQLDataBaseConfig));
     if (!dbConfig) {
         log_error("Failed to allocate memory for MySQL database config");
         free(clientCfg.addr);
@@ -164,7 +164,7 @@ DataBaseConfig* NewMySQLDataBaseClient(const char *configJson) {
 }
 
 // 释放 MySQL 数据库客户端
-void FreeMySQLDataBaseClient(DataBaseConfig *dbConfig) {
+void FreeMySQLDataBaseClient(MySQLDataBaseConfig *dbConfig) {
     if (!dbConfig) return;
     
     mysql_close_client(dbConfig);

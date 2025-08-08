@@ -16,10 +16,10 @@ typedef struct {
 typedef struct {
     RedisClientConfig config;
     redisContext *conn;
-} DataBaseConfig;
+} RedisDataBaseConfig;
 
 typedef struct {
-    DataBaseConfig dbConfig;
+    RedisDataBaseConfig dbConfig;
     DataModel *dataModel;
     int reportCycleMs;
     CustomizedClient *customizedClient;
@@ -29,15 +29,15 @@ typedef struct {
 
 // Redis 客户端函数
 int redis_parse_client_config(const char *json, RedisClientConfig *out);
-int redis_init_client(DataBaseConfig *db);
-void redis_close_client(DataBaseConfig *db);
-int redis_add_data(DataBaseConfig *db, const DataModel *data);
-int redis_get_data_by_device_id(DataBaseConfig *db, const char *deviceID, DataModel ***dataModels, int *count);
+int redis_init_client(RedisDataBaseConfig *db);
+void redis_close_client(RedisDataBaseConfig *db);
+int redis_add_data(RedisDataBaseConfig *db, const DataModel *data);
+int redis_get_data_by_device_id(RedisDataBaseConfig *db, const char *deviceID, DataModel ***dataModels, int *count);
 
 // Redis 数据处理函数
 int StartRedisDataHandler(const char *clientConfigJson, DataModel *dataModel, CustomizedClient *customizedClient, VisitorConfig *visitorConfig, int reportCycleMs);
 int StopRedisDataHandler(RedisDataHandlerArgs *args);
-DataBaseConfig* NewRedisDataBaseClient(const char *configJson);
-void FreeRedisDataBaseClient(DataBaseConfig *dbConfig);
+RedisDataBaseConfig* NewRedisDataBaseClient(const char *configJson);
+void FreeRedisDataBaseClient(RedisDataBaseConfig *dbConfig);
 
 #endif

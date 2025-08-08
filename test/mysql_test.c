@@ -13,7 +13,7 @@ int main() {
         .userName = "root",
         .password = getenv("PASSWORD")
     };
-    DataBaseConfig db = { .config = config, .conn = NULL };
+    MySQLDataBaseConfig db = { .config = config, .conn = NULL };
 
     // 初始化连接
     if (mysql_init_client(&db) != 0) {

@@ -124,7 +124,7 @@ int StopTDEngineDataHandler(TDEngineDataHandlerArgs *args) {
 }
 
 // 创建 TDengine 数据库客户端
-DataBaseConfig* NewTDEngineDataBaseClient(const char *configJson) {
+TDEngineDataBaseConfig* NewTDEngineDataBaseClient(const char *configJson) {
     if (!configJson) {
         log_error("TDengine config JSON is null");
         return NULL;
@@ -136,7 +136,7 @@ DataBaseConfig* NewTDEngineDataBaseClient(const char *configJson) {
         return NULL;
     }
     
-    DataBaseConfig *dbConfig = calloc(1, sizeof(DataBaseConfig));
+    TDEngineDataBaseConfig *dbConfig = calloc(1, sizeof(TDEngineDataBaseConfig));
     if (!dbConfig) {
         log_error("Failed to allocate memory for TDengine database config");
         free(clientCfg.addr);
@@ -162,7 +162,7 @@ DataBaseConfig* NewTDEngineDataBaseClient(const char *configJson) {
 }
 
 // 释放 TDengine 数据库客户端
-void FreeTDEngineDataBaseClient(DataBaseConfig *dbConfig) {
+void FreeTDEngineDataBaseClient(TDEngineDataBaseConfig *dbConfig) {
     if (!dbConfig) return;
     
     tdengine_close_client(dbConfig);
