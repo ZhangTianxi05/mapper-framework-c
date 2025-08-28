@@ -192,7 +192,6 @@ int tdengine_get_data_by_device_id(TDEngineDataBaseConfig *db, const char *devic
     
     // 计算行数
     *count = 0;
-    int num_fields = taos_num_fields(result);
     TAOS_ROW row;
     
     // 第一次遍历计算行数

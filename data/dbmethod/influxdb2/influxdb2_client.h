@@ -21,7 +21,7 @@ typedef struct {
 typedef struct {
     Influxdb2ClientConfig clientConfig;
     Influxdb2DataConfig dataConfig;
-} DataBaseConfig;
+} Influxdb2DataBaseConfig;
 
 typedef struct {
     CURL *curl;

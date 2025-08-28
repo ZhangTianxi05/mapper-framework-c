@@ -76,48 +76,49 @@ int dev_panel_write_device(DeviceManager *manager, const char *method,
 int dev_panel_get_device_method(DeviceManager *manager, const char *deviceId,
                                char ***method_map, int *method_count,
                                char ***property_map, int *property_count) {
-    if (!manager || !deviceId || !method_map || !method_count || 
+    if (!manager || !deviceId || !method_map || !method_count ||
         !property_map || !property_count) return -1;
-    
-    // 查找设备
+
     Device *device = device_manager_get(manager, deviceId);
     if (!device) {
         log_warn("Device %s not found", deviceId);
-        return -1;
-    }
-    
-    *method_count = device->instance.methodsCount;
-    *property_count = device->instance.methodsCount;
-    
-    if (*method_count == 0) {
-        *method_map = NULL;
-        *property_map = NULL;
+        *method_map = NULL; *method_count = 0;
+        *property_map = NULL; *property_count = 0;
         return 0;
     }
-    
-    // 分配方法映射数组
-    *method_map = calloc(*method_count, sizeof(char*));
-    *property_map = calloc(*property_count, sizeof(char*));
-    
-    for (int i = 0; i < *method_count; i++) {
-        DeviceMethod *method = &device->instance.methods[i];
-        
-        // 分配方法名数组（简化为只包含方法名）
-        (*method_map)[i] = calloc(2, sizeof(char*));
-        (*method_map)[i][0] = strdup(method->name ? method->name : "unknown");
-        (*method_map)[i][1] = NULL; // 结束标记
-        
-        // 分配属性名数组
-        int propCount = method->propertyNamesCount;
-        (*property_map)[i] = calloc(propCount + 1, sizeof(char*));
-        
-        for (int j = 0; j < propCount; j++) {
-            (*property_map)[i][j] = strdup(method->propertyNames[j] ? 
-                                         method->propertyNames[j] : "unknown");
+
+    // 方法列表（一维字符串数组）
+    *method_count = device->instance.methodsCount;
+    if (*method_count > 0) {
+        *method_map = calloc((size_t)*method_count, sizeof(char*));
+        for (int i = 0; i < *method_count; ++i) {
+            DeviceMethod *method = &device->instance.methods[i];
+            (*method_map)[i] = strdup(method->name ? method->name : "unknown");
         }
-        (*property_map)[i][propCount] = NULL; // 结束标记
+    } else {
+        *method_map = NULL;
     }
-    
+
+    // 属性列表扁平化为一维字符串数组
+    int total_props = 0;
+    for (int i = 0; i < device->instance.methodsCount; ++i) {
+        total_props += device->instance.methods[i].propertyNamesCount;
+    }
+    *property_count = total_props;
+    if (total_props > 0) {
+        *property_map = calloc((size_t)total_props, sizeof(char*));
+        int k = 0;
+        for (int i = 0; i < device->instance.methodsCount; ++i) {
+            DeviceMethod *method = &device->instance.methods[i];
+            for (int j = 0; j < method->propertyNamesCount; ++j) {
+                (*property_map)[k++] = strdup(method->propertyNames[j] ?
+                                              method->propertyNames[j] : "unknown");
+            }
+        }
+    } else {
+        *property_map = NULL;
+    }
+
     return 0;
 }
 

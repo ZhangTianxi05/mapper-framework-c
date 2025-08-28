@@ -8,30 +8,26 @@
 #include "common/configmaptype.h"
 #include "server.h"
 #include "device/device.h"
-
-// 你的设备面板类实现
+#include <grpcpp/health_check_service_interface.h>
+#include <grpcpp/ext/proto_server_reflection_plugin.h> 
+#include <fcntl.h>
 class DevPanel {
 public:
     DevPanel() {}
     ~DevPanel() {}
     
-    // TODO: 添加实际的设备面板功能
     void processDevice(const std::string& deviceId) {
-        // 占位实现
     }
 };
 
-// 1. 继承 proto 生成的 Service
 class DeviceMapperServiceImpl final : public v1beta1::DeviceMapperService::Service {
 public:
     explicit DeviceMapperServiceImpl(std::shared_ptr<DevPanel> devPanel) : devPanel_(devPanel) {}
 
-    // 实现各种 gRPC 服务方法
     ::grpc::Status RegisterDevice(::grpc::ServerContext* context,
                                   const ::v1beta1::RegisterDeviceRequest* request,
                                   ::v1beta1::RegisterDeviceResponse* response) override {
         log_info("RegisterDevice called");
-        // TODO: 你的业务逻辑
         return ::grpc::Status::OK;
     }
     
@@ -81,22 +77,17 @@ private:
     std::shared_ptr<DevPanel> devPanel_;
 };
 
-// ❌ 删除这些重复定义，它们已经在 server.h 中定义了
-// struct ServerConfig { ... }
-// class GrpcServer { ... }
 
-// ✅ 只保留 ServerConfig 构造函数的实现
 ServerConfig::ServerConfig(const std::string& sock_path, const std::string& protocol)
     : sockPath(sock_path), protocol(protocol) {}
 
-// ✅ 只保留 GrpcServer 方法的实现
+
 GrpcServer::GrpcServer(const ServerConfig& cfg, std::shared_ptr<DevPanel> devPanel)
     : cfg_(cfg), devPanel_(devPanel) {}
 
 int GrpcServer::Start() {
     log_info("uds socket path: %s", cfg_.sockPath.c_str());
     
-    // 清理已存在的 socket 文件
     struct stat st;
     if (stat(cfg_.sockPath.c_str(), &st) == 0) {
         if (unlink(cfg_.sockPath.c_str()) != 0) {
@@ -104,6 +95,8 @@ int GrpcServer::Start() {
             return -1;
         }
     }
+    grpc::EnableDefaultHealthCheckService(true);
+    grpc::reflection::InitProtoReflectionServerBuilderPlugin();
 
     std::string server_address = "unix://" + cfg_.sockPath;
     DeviceMapperServiceImpl service(devPanel_);
@@ -117,6 +110,15 @@ int GrpcServer::Start() {
         log_error("failed to start grpc server");
         return -1;
     }
+     for (int i = 0; i < 100; ++i) {
+        if (stat(cfg_.sockPath.c_str(), &st) == 0) {
+            if (chmod(cfg_.sockPath.c_str(), 0666) != 0) {
+                log_warn("chmod %s to 0666 failed", cfg_.sockPath.c_str());
+            }
+            break;
+        }
+        usleep(10000);
+    }
     
     log_info("start grpc server on %s", server_address.c_str());
     server->Wait();
@@ -126,7 +128,6 @@ int GrpcServer::Start() {
 void GrpcServer::Stop() {
     log_info("Stopping gRPC server...");
     
-    // 清理 socket 文件
     if (unlink(cfg_.sockPath.c_str()) != 0) {
         log_warn("failed to remove uds socket: %s", cfg_.sockPath.c_str());
     }
@@ -134,7 +135,6 @@ void GrpcServer::Stop() {
     log_info("gRPC server stopped");
 }
 
-// C 接口实现
 extern "C" {
 
 ServerConfig *server_config_new(const char *sock_path, const char *protocol) {
@@ -164,7 +164,6 @@ GrpcServer *grpcserver_new(ServerConfig *config, DeviceManager *device_manager) 
     }
     
     try {
-        // 创建 DevPanel 适配器
         auto devPanel = std::make_shared<DevPanel>();
         
         return new GrpcServer(*config, devPanel);
@@ -204,7 +203,7 @@ void grpcserver_stop(GrpcServer *server) {
 void grpcserver_free(GrpcServer *server) {
     if (server) {
         try {
-            server->Stop(); // 确保先停止服务器
+            server->Stop(); 
             delete server;
         } catch (const std::exception& e) {
             log_error("Failed to free gRPC server: %s", e.what());

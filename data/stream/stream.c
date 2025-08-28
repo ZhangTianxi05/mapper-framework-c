@@ -239,7 +239,7 @@ int stream_save_frame(const char *input_url, const char *output_dir, const char 
     }
     
     // 查找视频流
-    for (int i = 0; i < fmt_ctx->nb_streams; i++) {
+    for (unsigned int i = 0; i < fmt_ctx->nb_streams; i++) {
         if (fmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
             video_stream_idx = i;
             break;
@@ -480,7 +480,7 @@ int stream_save_video(const char *input_url, const char *output_dir, const char 
         
         int stream_index = 0;
         // 为每个输入流创建对应的输出流
-        for (int i = 0; i < input_fmt_ctx->nb_streams; i++) {
+        for (unsigned int i = 0; i < input_fmt_ctx->nb_streams; i++) {
             AVStream *in_stream = input_fmt_ctx->streams[i];
             AVCodecParameters *in_codecpar = in_stream->codecpar;
             

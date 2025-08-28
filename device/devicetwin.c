@@ -260,21 +260,6 @@ int devicetwin_report_to_cloud(Device *device, const char *propertyName, const c
     return 0;
 }
 
-// 孪生上报线程
-static void *twin_report_thread(void *arg) {
-    TwinProcessor *processor = (TwinProcessor*)arg;
-    
-    log_info("Twin report thread started for property: %s", processor->propertyName);
-    
-    while (processor->reportThreadRunning) {
-        // TODO: 定期上报逻辑
-        
-        usleep(processor->reportCycle * 1000); // 转换为微秒
-    }
-    
-    log_info("Twin report thread stopped for property: %s", processor->propertyName);
-    return NULL;
-}
 
 // 启动自动上报
 int devicetwin_start_auto_report(Device *device, const Twin *twin) {

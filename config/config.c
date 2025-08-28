@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <yaml.h>
+#include <strings.h>  // 新增：strcasecmp
 
 Config *config_parse(const char *filename)
 {
@@ -17,10 +18,15 @@ Config *config_parse(const char *filename)
         return NULL;
     }
 
+    // 在 config_parse 内，初始化默认值
+    memset(&cfg->database, 0, sizeof(cfg->database));
+    // cfg->database.mysql.enabled = 0 (默认关闭)
+
     yaml_parser_t parser;
     yaml_token_t token;
     char key[128] = {0};
     int in_grpc_server = 0, in_common = 0;
+    int in_database = 0, in_mysql = 0;  // 新增
 
     if (!yaml_parser_initialize(&parser))
     {
@@ -42,38 +48,43 @@ Config *config_parse(const char *filename)
             yaml_parser_scan(&parser, &token);
             if (token.type == YAML_SCALAR_TOKEN)
             {
-                if (strcmp((char *)token.data.scalar.value, "grpc_server") == 0)
-                {
-                    in_grpc_server = 1;
-                    in_common = 0;
-                    key[0] = '\0';
-                }
-                else if (strcmp((char *)token.data.scalar.value, "common") == 0)
-                {
-                    in_grpc_server = 0;
-                    in_common = 1;
-                    key[0] = '\0';
-                }
-                else
-                {
-                    strncpy(key, (char *)token.data.scalar.value, sizeof(key) - 1);
-                    key[sizeof(key) - 1] = '\0';
-                }
+                strncpy(key, (char *)token.data.scalar.value, sizeof(key) - 1);
+                key[sizeof(key) - 1] = '\0';
             }
-        }
-        else if (token.type == YAML_VALUE_TOKEN)
-        {
+            else {
+                yaml_token_delete(&token);
+                continue;
+            }
+
+            // 关键修复：跳过 VALUE token（:），再看是进入子映射还是标量值
             yaml_token_delete(&token);
-            yaml_parser_scan(&parser, &token);
+            do {
+                yaml_parser_scan(&parser, &token);
+            } while (token.type == YAML_VALUE_TOKEN);
+
+            if (token.type == YAML_BLOCK_MAPPING_START_TOKEN) {
+                // 进入子映射
+                if (strcmp(key, "grpc_server") == 0) {
+                    in_grpc_server = 1; in_common = 0; in_database = 0; in_mysql = 0;
+                } else if (strcmp(key, "common") == 0) {
+                    in_common = 1; in_grpc_server = 0; in_database = 0; in_mysql = 0;
+                } else if (strcmp(key, "database") == 0) {
+                    in_database = 1; in_common = 0; in_grpc_server = 0; in_mysql = 0;
+                } else if (in_database && strcmp(key, "mysql") == 0) {
+                    in_mysql = 1;
+                }
+                yaml_token_delete(&token);
+                continue;
+            }
+
+            // 如果是标量值，按当前上下文写入
             if (token.type == YAML_SCALAR_TOKEN)
             {
-                if (in_grpc_server)
-                {
+                if (in_grpc_server) {
                     if (strcmp(key, "socket_path") == 0)
                         strncpy(cfg->grpc_server.socket_path, (char *)token.data.scalar.value, sizeof(cfg->grpc_server.socket_path) - 1);
                 }
-                else if (in_common)
-                {
+                else if (in_common) {
                     if (strcmp(key, "name") == 0)
                         strncpy(cfg->common.name, (char *)token.data.scalar.value, sizeof(cfg->common.name) - 1);
                     else if (strcmp(key, "version") == 0)
@@ -89,9 +100,34 @@ Config *config_parse(const char *filename)
                     else if (strcmp(key, "http_port") == 0)
                         strncpy(cfg->common.http_port, (char *)token.data.scalar.value, sizeof(cfg->common.http_port) - 1);
                 }
+                else if (in_mysql) {
+                    if (strcmp(key, "enabled") == 0) {
+                        const char *v = (char *)token.data.scalar.value;
+                        cfg->database.mysql.enabled = (!strcasecmp(v,"true") || !strcmp(v,"1")) ? 1 : 0;
+                    } else if (strcmp(key, "addr") == 0) {
+                        strlcpy(cfg->database.mysql.addr, (char *)token.data.scalar.value, sizeof(cfg->database.mysql.addr));
+                    } else if (strcmp(key, "database") == 0) {
+                        strlcpy(cfg->database.mysql.database, (char *)token.data.scalar.value, sizeof(cfg->database.mysql.database));
+                    } else if (strcmp(key, "username") == 0) {
+                        strlcpy(cfg->database.mysql.username, (char *)token.data.scalar.value, sizeof(cfg->database.mysql.username));
+                    }
+                }
+                yaml_token_delete(&token);
+            } else {
+                yaml_token_delete(&token);
             }
         }
-        yaml_token_delete(&token);
+        else if (token.type == YAML_BLOCK_END_TOKEN) {
+            // 退出子映射
+            if (in_mysql) { in_mysql = 0; }
+            else if (in_database) { in_database = 0; }
+            else if (in_common) { in_common = 0; }
+            else if (in_grpc_server) { in_grpc_server = 0; }
+            yaml_token_delete(&token);
+        }
+        else {
+            yaml_token_delete(&token);
+        }
     }
 
     yaml_parser_delete(&parser);

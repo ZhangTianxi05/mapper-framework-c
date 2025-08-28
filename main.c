@@ -3,68 +3,86 @@
 #include <signal.h>
 #include <unistd.h>
 #include <string.h>
+#include <time.h>                 // 新增
 
-// 引入已有的 C 代码模块 - 修正头文件路径
 #include "log/log.h"
 #include "config/config.h"
 #include "device/device.h"
-#include "grpcclient/register.h"        // 修正：实际是 grpcclient/register.h
-#include "grpcserver/server.h"          // 修正：实际是 grpcserver/server.h
-#include "httpserver/httpserver.h"      // 修正：实际是 httpserver/httpserver.h
+#include "grpcclient/register.h"       
+#include "grpcserver/server.h"        
+#include "httpserver/httpserver.h"     
 #include "common/configmaptype.h"
 #include "common/const.h"
+#include "data/dbmethod/mysql/mysql_client.h"  // 新增
 
-// 全局变量 - 修正类型名称
 static volatile int running = 1;
 static DeviceManager *g_deviceManager = NULL;
-static GrpcServer *g_grpcServer = NULL;          // 来自 grpcserver/server.h
-static RestServer *g_httpServer = NULL;          // 修正：实际是 RestServer
+static GrpcServer *g_grpcServer = NULL;          
+static RestServer *g_httpServer = NULL;          
+static MySQLDataBaseConfig *g_mysql = NULL;    // 新增
 
-// 信号处理函数
+static void cleanup_resources(void);
 static void signal_handler(int sig) {
+    static int signal_received = 0;
+    
+    if (signal_received) {
+        return;
+    }
+    signal_received = 1;
+    
     switch (sig) {
         case SIGINT:
         case SIGTERM:
             log_info("Received signal %d, shutting down gracefully...", sig);
             running = 0;
+            
+            cleanup_resources();
+            log_info("=== Mapper shutdown completed ===");
+            exit(0);
             break;
         default:
             break;
     }
 }
-
-// 注册信号处理器
 static void setup_signal_handlers(void) {
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
-    signal(SIGPIPE, SIG_IGN); // 忽略 SIGPIPE
+    signal(SIGPIPE, SIG_IGN); 
 }
 
-// 清理资源
 static void cleanup_resources(void) {
     log_info("Cleaning up resources...");
     
-    // 停止 GRPC 服务器
     if (g_grpcServer) {
-        grpcserver_stop(g_grpcServer);      // 根据 grpcserver/server.cc 实现
+        grpcserver_stop(g_grpcServer);      
         grpcserver_free(g_grpcServer);
         g_grpcServer = NULL;
     }
     
-    // 停止 HTTP 服务器
     if (g_httpServer) {
-        rest_server_stop(g_httpServer);     // 修正：使用实际函数名
-        rest_server_free(g_httpServer);     // 修正：使用实际函数名
+        rest_server_stop(g_httpServer);     
+        rest_server_free(g_httpServer);     
         g_httpServer = NULL;
     }
     
-    // 停止所有设备
     if (g_deviceManager) {
         device_manager_stop_all(g_deviceManager);
         device_manager_free(g_deviceManager);
         g_deviceManager = NULL;
     }
-    
+
+    // 关闭 MySQL
+    if (g_mysql) {
+        mysql_close_client(g_mysql);
+        // 释放通过 mysql_parse_client_config 分配的字符串
+        free(g_mysql->config.addr);
+        free(g_mysql->config.database);
+        free(g_mysql->config.userName);
+        free(g_mysql->config.password);
+        free(g_mysql);
+        g_mysql = NULL;
+    }
+
     log_info("Cleanup completed");
 }
 
@@ -76,30 +94,88 @@ int main(int argc, char *argv[]) {
     int deviceCount = 0;
     int modelCount = 0;
     
-    // 初始化日志系统
-    log_init();                             // 修正：log_init() 不返回值
+    log_init();        
     
     log_info("=== KubeEdge Mapper Framework C Version Starting ===");
     
-    // 设置信号处理器
     setup_signal_handlers();
     
-    // 解析配置 - 修正参数
-    const char *configFile = "config.yaml"; // 默认配置文件
+    const char *configFile = "../config.yaml";
     if (argc > 1) {
-        configFile = argv[1];               // 支持命令行指定配置文件
+        configFile = argv[1];               
     }
     
-    config = config_parse(configFile);     // 修正：实际函数签名
+    config = config_parse(configFile);    
     if (!config) {
         log_error("Failed to parse configuration: %s", configFile);
         ret = EXIT_FAILURE;
         goto cleanup;
     }
     
+    // 确认解析后打印配置，便于诊断
     log_info("Configuration loaded successfully");
-    // config_print(config);                // 可选：如果有 print 函数
-    
+    log_info("MySQL cfg parsed: enabled=%d addr=%s db=%s user=%s",
+             config->database.mysql.enabled,
+             config->database.mysql.addr[0] ? config->database.mysql.addr : "(empty)",
+             config->database.mysql.database[0] ? config->database.mysql.database : "(empty)",
+             config->database.mysql.username[0] ? config->database.mysql.username : "(empty)");
+
+    // 环境变量兜底：如果解析器没填 enabled，可用 MYSQL_ENABLED=true/1 打开
+    if (!config->database.mysql.enabled) {
+        const char *en = getenv("MYSQL_ENABLED");
+        if (en && (*en=='1' || strcasecmp(en, "true")==0)) {
+            log_warn("MYSQL_ENABLED env overrides config: enabling MySQL");
+            config->database.mysql.enabled = 1;
+        }
+    }
+
+    // 初始化 MySQL（自检）
+    if (config->database.mysql.enabled) {
+        // 放大缓冲，消除 snprintf 警告
+        char json[512];
+        snprintf(json, sizeof(json),
+                 "{\"addr\":\"%s\",\"database\":\"%s\",\"userName\":\"%s\"}",
+                 config->database.mysql.addr[0] ? config->database.mysql.addr : "127.0.0.1",
+                 config->database.mysql.database[0] ? config->database.mysql.database : "testdb",
+                 config->database.mysql.username[0] ? config->database.mysql.username : "mapper");
+
+        MySQLClientConfig clientCfg = {0};
+        if (mysql_parse_client_config(json, &clientCfg) != 0) {
+            log_error("MySQL client config parse failed");
+        } else {
+            g_mysql = (MySQLDataBaseConfig*)calloc(1, sizeof(MySQLDataBaseConfig));
+            g_mysql->config = clientCfg;
+            if (mysql_init_client(g_mysql) != 0) {
+                log_error("MySQL init failed (host=%s db=%s user=%s). Set MYSQL_PASSWORD and MYSQL_PORT if needed.",
+                          clientCfg.addr, clientCfg.database, clientCfg.userName);
+            } else {
+                log_info("MySQL connected (host=%s db=%s user=%s)",
+                         clientCfg.addr, clientCfg.database, clientCfg.userName);
+                DataModel dm = {0};
+                dm.namespace_   = "default";
+                dm.deviceName   = "mysql-selftest";
+                dm.propertyName = "ping";
+                dm.type         = "string";
+                dm.value        = "ok";
+                dm.timeStamp    = time(NULL);
+                if (mysql_add_data(g_mysql, &dm) == 0) {
+                    log_info("MySQL self-test OK -> `%s/%s/%s`", dm.namespace_, dm.deviceName, dm.propertyName);
+                } else {
+                    log_error("MySQL self-test insert failed");
+                }
+            }
+        }
+    } else {
+        log_info("MySQL disabled in config");
+    }
+
+    log_info("Skipping EdgeCore registration for development testing");
+    deviceCount = 0;
+    modelCount = 0;
+    deviceList = NULL;
+    deviceModelList = NULL;
+    // config_print(config);               
+    /*
     // 注册 Mapper 到 EdgeCore
     log_info("Mapper will register to edgecore");
     ret = RegisterMapper(1, &deviceList, &deviceCount, &deviceModelList, &modelCount);
@@ -110,8 +186,8 @@ int main(int argc, char *argv[]) {
     }
     log_info("Mapper register finished (devices: %d, models: %d)", 
              deviceCount, modelCount);
+    */
     
-    // 创建设备管理器（相当于 Go 版本的 NewDevPanel）
     g_deviceManager = device_manager_new();
     if (!g_deviceManager) {
         log_error("Failed to create device manager");
@@ -119,10 +195,8 @@ int main(int argc, char *argv[]) {
         goto cleanup;
     }
     
-    // 初始化设备（相当于 Go 版本的 DevInit）
     log_info("Initializing devices...");
     for (int i = 0; i < deviceCount; i++) {
-        // 查找对应的设备模型
         DeviceModel *model = NULL;
         for (int j = 0; j < modelCount; j++) {
             if (deviceModelList[j].name && deviceList[i].model &&
@@ -137,14 +211,12 @@ int main(int argc, char *argv[]) {
             continue;
         }
         
-        // 创建设备
         Device *device = device_new(&deviceList[i], model);
         if (!device) {
             log_error("Failed to create device %s", deviceList[i].name);
             continue;
         }
         
-        // 添加到设备管理器
         if (device_manager_add(g_deviceManager, device) != 0) {
             log_error("Failed to add device %s to manager", deviceList[i].name);
             device_free(device);
@@ -161,35 +233,32 @@ int main(int argc, char *argv[]) {
                  g_deviceManager->deviceCount);
     }
     
-    // 启动所有设备（相当于 Go 版本的 DevStart）
     log_info("Starting all devices...");
     device_manager_start_all(g_deviceManager);
     
-    // 启动 HTTP 服务器 - 修正端口解析
     const char *httpPortStr = config->common.http_port;
     if (httpPortStr && strlen(httpPortStr) > 0) {
         log_info("Starting HTTP server on port %s", httpPortStr);
-        g_httpServer = rest_server_new(g_deviceManager, httpPortStr);  // 修正：使用实际函数名
+        g_httpServer = rest_server_new(g_deviceManager, httpPortStr); 
         if (!g_httpServer) {
             log_error("Failed to create HTTP server");
         } else {
-            rest_server_start(g_httpServer);                          // 修正：使用实际函数名
+            rest_server_start(g_httpServer);                          
             log_info("HTTP server started successfully");
         }
     } else {
         log_info("HTTP server disabled (no port configured)");
     }
     
-    // 启动 GRPC 服务器 - 修正配置结构
-    log_info("Starting GRPC server on socket: %s", 
-             config->grpc_server.socket_path ? config->grpc_server.socket_path : "default");
+
+    const char *grpc_sock = (config->grpc_server.socket_path[0]
+                             ? config->grpc_server.socket_path
+                             : "/tmp/mapper_dmi.sock");
+    log_info("Starting GRPC server on socket: %s",
+             config->grpc_server.socket_path[0] ? config->grpc_server.socket_path : "default");
+    ServerConfig *grpcConfig = server_config_new(grpc_sock, "customized");
     
-ServerConfig *grpcConfig = server_config_new(
-    config->grpc_server.socket_path,
-    "customized"
-);
-    
-    g_grpcServer = grpcserver_new(grpcConfig, g_deviceManager);     // 修正：使用实际函数名
+    g_grpcServer = grpcserver_new(grpcConfig, g_deviceManager);     
     if (!g_grpcServer) {
         log_error("Failed to create GRPC server");
         server_config_free(grpcConfig);
@@ -197,7 +266,7 @@ ServerConfig *grpcConfig = server_config_new(
         goto cleanup;
     }
     
-    if (grpcserver_start(g_grpcServer) != 0) {                      // 修正：使用实际函数名
+    if (grpcserver_start(g_grpcServer) != 0) {                      
         log_error("Failed to start GRPC server");
         ret = EXIT_FAILURE;
         goto cleanup;
@@ -207,16 +276,13 @@ ServerConfig *grpcConfig = server_config_new(
     log_info("GRPC server started successfully");
     log_info("=== Mapper startup completed, running... ===");
     
-    // 主循环 - 等待信号
     while (running) {
-        usleep(1000000); // 1秒
+        usleep(1000000); 
         
-        // 可选：定期检查设备状态
         if (g_deviceManager && g_deviceManager->deviceCount > 0) {
             static int health_check_counter = 0;
             health_check_counter++;
             
-            // 每30秒检查一次设备健康状态
             if (health_check_counter >= 30) {
                 health_check_counter = 0;
                 
@@ -239,26 +305,12 @@ ServerConfig *grpcConfig = server_config_new(
     log_info("Main loop exited, shutting down...");
 
 cleanup:
-    // 清理资源
     cleanup_resources();
-    
-    // 释放设备列表 - 暂时注释，等实现后再启用
-    /*
-    if (deviceList) {
-        grpcclient_free_device_list(deviceList, deviceCount);
-    }
-    
-    if (deviceModelList) {
-        grpcclient_free_model_list(deviceModelList, modelCount);
-    }
-    */
-    
-    // 释放配置
+
     if (config) {
         config_free(config);
     }
     
-    // 关闭日志系统 - 根据 log.h 没有 cleanup 函数
     log_flush();
     
     log_info("=== Mapper shutdown completed ===");
