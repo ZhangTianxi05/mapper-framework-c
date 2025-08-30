@@ -8,7 +8,7 @@ common:
   protocol: "modbus-tcp"
   address: "127.0.0.1"
   http_port: "7777"
-  edgecore_sock: /var/lib/kubeedge/kubeedge.sock
+  edgecore_sock: /etc/kubeedge/dmi.sock
 
 database:
   mysql:

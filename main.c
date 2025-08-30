@@ -169,24 +169,15 @@ int main(int argc, char *argv[]) {
         log_info("MySQL disabled in config");
     }
 
-    log_info("Skipping EdgeCore registration for development testing");
-    deviceCount = 0;
-    modelCount = 0;
-    deviceList = NULL;
-    deviceModelList = NULL;
-    // config_print(config);               
-    /*
     // 注册 Mapper 到 EdgeCore
     log_info("Mapper will register to edgecore");
-    ret = RegisterMapper(1, &deviceList, &deviceCount, &deviceModelList, &modelCount);
+    ret = RegisterMapper(1, &deviceList, &deviceCount, &deviceModelList, &modelCount); // [`RegisterMapper`](mapper-framework-c/grpcclient/register.cc)
     if (ret != 0) {
         log_error("Failed to register mapper to edgecore");
         ret = EXIT_FAILURE;
         goto cleanup;
     }
-    log_info("Mapper register finished (devices: %d, models: %d)", 
-             deviceCount, modelCount);
-    */
+    log_info("Mapper register finished (devices: %d, models: %d)", deviceCount, modelCount);
     
     g_deviceManager = device_manager_new();
     if (!g_deviceManager) {

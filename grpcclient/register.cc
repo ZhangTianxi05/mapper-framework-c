@@ -11,6 +11,7 @@
 #include "dmi/v1beta1/api.pb-c.h"
 #include "util/parse/grpc.h"
 #include "common/datamodel.h"
+#include "log/log.h"  // 新增
 
 using namespace std;
 
@@ -20,19 +21,46 @@ static int RegisterMapperCpp(
     std::vector<v1beta1::Device> &deviceList,
     std::vector<v1beta1::DeviceModel> &modelList
 ) {
-    Config *cfg = config_parse("config.yaml");
-    if (!cfg) return -1;
+    const char* env_sock = getenv("EDGECORE_SOCK");
+    std::string sock_path;
+    Config *cfg = nullptr;
 
-    std::string sock_addr = "unix://" + std::string(cfg->common.edgecore_sock);
+    if (env_sock && *env_sock) {
+        sock_path = env_sock;
+    } else {
+        // 优先 ./config.yaml，回退 ../config.yaml（从 build 目录运行的常见情况）
+        cfg = config_parse("config.yaml");
+        if (!cfg) cfg = config_parse("../config.yaml");
+        if (!cfg) {
+            log_error("RegisterMapper: config.yaml not found (tried ./ and ../)");
+            return -1;
+        }
+        if (cfg->common.edgecore_sock[0]) {
+            sock_path = cfg->common.edgecore_sock;
+        } else {
+            sock_path = "/var/lib/kubeedge/kubeedge.sock";
+        }
+    }
+
+    std::string sock_addr = "unix://" + sock_path;
     auto channel = grpc::CreateChannel(sock_addr, grpc::InsecureChannelCredentials());
     std::unique_ptr<v1beta1::DeviceManagerService::Stub> stub = v1beta1::DeviceManagerService::NewStub(channel);
 
     v1beta1::MapperInfo mapper;
-    mapper.set_name(cfg->common.name);
-    mapper.set_version(cfg->common.version);
-    mapper.set_api_version(cfg->common.api_version);
-    mapper.set_protocol(cfg->common.protocol);
-    mapper.set_address(cfg->common.address, strlen(cfg->common.address));
+    if (!cfg) {
+        mapper.set_name("arduino-mapper");
+        mapper.set_version("v1.13.0");
+        mapper.set_api_version("v1.0.0");
+        mapper.set_protocol("modbus-tcp");
+        mapper.set_address("/tmp/mapper_dmi.sock");
+    } else {
+        mapper.set_name(cfg->common.name);
+        mapper.set_version(cfg->common.version);
+        mapper.set_api_version(cfg->common.api_version);
+        mapper.set_protocol(cfg->common.protocol);
+        // 关键：告知 EdgeCore 回连到我们的 UDS
+        mapper.set_address(cfg->grpc_server.socket_path);
+    }
     mapper.set_state(DEVICE_STATUS_OK);
 
     v1beta1::MapperRegisterRequest req;
@@ -44,14 +72,15 @@ static int RegisterMapperCpp(
     grpc::Status status = stub->MapperRegister(&ctx, req, &resp);
 
     if (!status.ok()) {
-        config_free(cfg);
+        log_error("MapperRegister RPC failed: code=%d msg=%s",
+                  (int)status.error_code(), status.error_message().c_str());
+        if (cfg) config_free(cfg);
         return -1;
     }
 
     deviceList.assign(resp.devicelist().begin(), resp.devicelist().end());
     modelList.assign(resp.modellist().begin(), resp.modellist().end());
-
-    config_free(cfg);
+    if (cfg) config_free(cfg);
     return 0;
 }
 
