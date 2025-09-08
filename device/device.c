@@ -5,6 +5,7 @@
 #include <string.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <time.h>
 
 // 设备数据处理线程
 static void *device_data_thread(void *arg) {
@@ -446,12 +447,89 @@ int device_restart(Device *device) {
 }
 
 // 处理设备 Twin 数据（暂时简单实现）
-int device_deal_twin(Device *device, const Twin *twin) {
-    if (!device || !twin) return -1;
-    
-    // TODO: 实现具体的 twin 处理逻辑
-    log_debug("Processing twin for device %s: %s", 
-              device->instance.name, twin->propertyName);
+// 读取协议配置里的 ip/port（简易解析）
+static int json_get_str(const char *json, const char *key, char *out, size_t outsz) {
+    if (!json || !key || !out || outsz == 0) return -1;
+    const char *p = strcasestr(json, key);
+    if (!p) return -1;
+    p = strchr(p, ':'); if (!p) return -1; p++;
+    while (*p == ' ' || *p == '\"') p++;
+    size_t i = 0;
+    while (*p && *p != '\"' && *p != ',' && *p != '}' && i + 1 < outsz) out[i++] = *p++;
+    out[i] = '\0';
+    return i > 0 ? 0 : -1;
+}
+static int json_get_int(const char *json, const char *key, int *out) {
+    char buf[32] = {0};
+    if (json_get_str(json, key, buf, sizeof(buf)) == 0) { *out = atoi(buf); return 0; }
+    return -1;
+}
+static void now_iso8601(char ts[32]) {
+    time_t t = time(NULL); struct tm tm; gmtime_r(&t, &tm);
+    strftime(ts, 32, "%Y-%m-%dT%H:%M:%SZ", &tm);
+}
+// 演示：根据属性名映射 offset（你的 CR: temperature=1, threshold=2）
+static int resolve_offset_by_name(const char *propName) {
+    if (!propName) return -1;
+    if (strcmp(propName, "temperature") == 0) return 1;
+    if (strcmp(propName, "threshold") == 0) return 2;
+    return -1;
+}
+
+// 替换原空实现：按 desired 写入 Modbus，并回填 reported
+int device_deal_twin(Device *device, const Twin *twin_in) {
+    if (!device || !twin_in) return -1;
+    Twin *twin = (Twin*)twin_in;
+
+    const char *prop = twin->propertyName ? twin->propertyName : "(null)";
+    const char *desired = twin->observedDesired.value;
+    const char *reported = twin->reported.value;
+
+    if (!desired || !*desired) {
+        log_debug("Twin %s no desired, skip", prop);
+        return 0;
+    }
+    if (reported && strcmp(reported, desired) == 0) {
+        log_debug("Twin %s desired == reported (%s), skip", prop, desired);
+        return 0;
+    }
+
+    // 解析协议配置
+    char ip[64] = "127.0.0.1";
+    int port = 1502;
+    if (device->instance.pProtocol.configData) {
+        json_get_str(device->instance.pProtocol.configData, "ip", ip, sizeof(ip));
+        json_get_int(device->instance.pProtocol.configData, "port", &port);
+    }
+
+    int offset = resolve_offset_by_name(twin->propertyName);
+    if (offset <= 0) {
+        log_warn("Twin %s: cannot resolve offset, skip", prop);
+        return 0;
+    }
+
+    int value = atoi(desired);
+
+    // 注意：写保持寄存器不能带 -c
+    char cmd[256];
+    snprintf(cmd, sizeof(cmd),
+             "/usr/bin/mbpoll -1 -m tcp %s -p %d -a 1 -t 4 -r %d %d >/dev/null 2>&1",
+             ip, port, offset, value);
+    int rc = system(cmd);
+    if (rc != 0) {
+        log_error("Twin %s: mbpoll write failed (rc=%d). cmd=%s", prop, rc, cmd);
+        return -1;
+    }
+
+    // 回填 reported（本地内存）
+    free(twin->reported.value);
+    char ts[32]; now_iso8601(ts);
+    twin->reported.value = strdup(desired);
+    free(twin->reported.metadata.timestamp);
+    twin->reported.metadata.timestamp = strdup(ts);
+
+    log_info("Twin %s write success: offset=%d value=%d (ip=%s:%d); reported updated",
+             prop, offset, value, ip, port);
     return 0;
 }
 

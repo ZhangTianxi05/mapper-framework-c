@@ -1,9 +1,15 @@
+// 放在所有 include 之前，启用 GNU 扩展（pthread_timedjoin_np）
+#define _GNU_SOURCE
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <signal.h>
 #include <unistd.h>
 #include <string.h>
-#include <time.h>                 // 新增
+#include <time.h>
+#include <pthread.h>
+#include <sys/stat.h>
+#include <limits.h>
 
 #include "log/log.h"
 #include "config/config.h"
@@ -20,29 +26,24 @@ static DeviceManager *g_deviceManager = NULL;
 static GrpcServer *g_grpcServer = NULL;          
 static RestServer *g_httpServer = NULL;          
 static MySQLDataBaseConfig *g_mysql = NULL;    // 新增
+static pthread_t g_grpcThread = 0;
+static char g_grpcSockPath[PATH_MAX] = {0};
+// 新增：设备启动线程句柄
+static pthread_t g_devStartThread = 0;
 
 static void cleanup_resources(void);
 static void signal_handler(int sig) {
     static int signal_received = 0;
-    
-    if (signal_received) {
+    signal_received++;
+    if (signal_received == 1) {
+        log_info("Received signal %d, shutting down gracefully...", sig);
+        running = 0;
         return;
     }
-    signal_received = 1;
-    
-    switch (sig) {
-        case SIGINT:
-        case SIGTERM:
-            log_info("Received signal %d, shutting down gracefully...", sig);
-            running = 0;
-            
-            cleanup_resources();
-            log_info("=== Mapper shutdown completed ===");
-            exit(0);
-            break;
-        default:
-            break;
-    }
+    // 第二次 Ctrl+C 直接硬退，避免卡死
+    log_warn("Received signal %d again, force exiting now.", sig);
+    log_flush();
+    _exit(128 + sig);
 }
 static void setup_signal_handlers(void) {
     signal(SIGINT, signal_handler);
@@ -52,29 +53,76 @@ static void setup_signal_handlers(void) {
 
 static void cleanup_resources(void) {
     log_info("Cleaning up resources...");
-    
-    if (g_grpcServer) {
-        grpcserver_stop(g_grpcServer);      
-        grpcserver_free(g_grpcServer);
-        g_grpcServer = NULL;
-    }
-    
+
+    // 1) HTTP
+    log_info("[cleanup] stopping HTTP...");
     if (g_httpServer) {
-        rest_server_stop(g_httpServer);     
-        rest_server_free(g_httpServer);     
+        rest_server_stop(g_httpServer);
+        rest_server_free(g_httpServer);
         g_httpServer = NULL;
     }
-    
+    log_info("[cleanup] HTTP done");
+
+    // 2) 设备：先发 stop
+    log_info("[cleanup] stopping devices...");
     if (g_deviceManager) {
         device_manager_stop_all(g_deviceManager);
+    }
+    log_info("[cleanup] devices stop_all issued");
+
+    // 2.1) 限时等待设备启动线程退出；先尝试 cancel，再 timedjoin
+#ifdef __linux__
+    if (g_devStartThread) {
+        log_info("[cleanup] joining device_start_thread...");
+        // 先请求取消（若 start_all 内部阻塞，join 可能等不到）
+        pthread_cancel(g_devStartThread);
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        ts.tv_sec += 3; // 最多等 3 秒
+        if (pthread_timedjoin_np(g_devStartThread, NULL, &ts) != 0) {
+            log_warn("device_start_thread timed out, force cancel+join");
+            pthread_cancel(g_devStartThread);
+            pthread_join(g_devStartThread, NULL);
+        }
+        g_devStartThread = 0;
+    }
+#endif
+    log_info("[cleanup] device_start_thread done");
+
+    // 2.2) 释放设备管理器
+    log_info("[cleanup] freeing device manager...");
+    if (g_deviceManager) {
         device_manager_free(g_deviceManager);
         g_deviceManager = NULL;
     }
+    log_info("[cleanup] device manager freed");
 
-    // 关闭 MySQL
+    // 3) gRPC
+    log_info("[cleanup] stopping gRPC...");
+    if (g_grpcServer) {
+        grpcserver_stop(g_grpcServer);
+        if (g_grpcThread) {
+            pthread_join(g_grpcThread, NULL);
+            g_grpcThread = 0;
+        }
+        grpcserver_free(g_grpcServer);
+        g_grpcServer = NULL;
+
+        if (g_grpcSockPath[0]) {
+            if (unlink(g_grpcSockPath) != 0) {
+                log_warn("failed to remove uds socket: %s", g_grpcSockPath);
+            } else {
+                log_info("uds socket removed: %s", g_grpcSockPath);
+            }
+            g_grpcSockPath[0] = '\0';
+        }
+    }
+    log_info("[cleanup] gRPC done");
+
+    // 4) MySQL
+    log_info("[cleanup] closing MySQL...");
     if (g_mysql) {
         mysql_close_client(g_mysql);
-        // 释放通过 mysql_parse_client_config 分配的字符串
         free(g_mysql->config.addr);
         free(g_mysql->config.database);
         free(g_mysql->config.userName);
@@ -82,8 +130,36 @@ static void cleanup_resources(void) {
         free(g_mysql);
         g_mysql = NULL;
     }
+    log_info("[cleanup] MySQL done");
 
     log_info("Cleanup completed");
+}
+
+static void* grpc_server_thread(void *arg) {
+    GrpcServer *srv = (GrpcServer*)arg;
+    // 阻塞运行在子线程，不阻塞主线程
+    grpcserver_start(srv);
+    return NULL;
+}
+
+// 新增：设备启动线程函数（避免主线程阻塞在 start_all）
+static void* device_start_thread(void *arg) {
+    pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
+    pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, NULL);
+    DeviceManager *mgr = (DeviceManager*)arg;
+    device_manager_start_all(mgr);
+    return NULL;
+}
+
+static int wait_uds_ready(const char *path, int timeout_ms) {
+    struct stat st;
+    int waited = 0;
+    while (waited < timeout_ms) {
+        if (stat(path, &st) == 0) return 0;
+        usleep(100 * 1000);
+        waited += 100;
+    }
+    return -1;
 }
 
 int main(int argc, char *argv[]) {
@@ -169,22 +245,55 @@ int main(int argc, char *argv[]) {
         log_info("MySQL disabled in config");
     }
 
-    // 注册 Mapper 到 EdgeCore
-    log_info("Mapper will register to edgecore");
-    ret = RegisterMapper(1, &deviceList, &deviceCount, &deviceModelList, &modelCount); // [`RegisterMapper`](mapper-framework-c/grpcclient/register.cc)
-    if (ret != 0) {
-        log_error("Failed to register mapper to edgecore");
-        ret = EXIT_FAILURE;
-        goto cleanup;
-    }
-    log_info("Mapper register finished (devices: %d, models: %d)", deviceCount, modelCount);
-    
+    // 先创建 DeviceManager（供 gRPC 回调使用）
     g_deviceManager = device_manager_new();
     if (!g_deviceManager) {
         log_error("Failed to create device manager");
         ret = EXIT_FAILURE;
         goto cleanup;
     }
+
+    // 先启动本地 gRPC（后台线程），确保 EdgeCore 能回连
+    const char *grpc_sock = (config->grpc_server.socket_path[0]
+                             ? config->grpc_server.socket_path
+                             : "/tmp/mapper_dmi.sock");
+    unlink(grpc_sock); // 启动前清残留
+    // 保存路径，供清理时 unlink
+    strncpy(g_grpcSockPath, grpc_sock, sizeof(g_grpcSockPath)-1);
+
+    log_info("Starting GRPC server on socket: %s", grpc_sock);
+    ServerConfig *grpcConfig = server_config_new(grpc_sock, "customized");
+    g_grpcServer = grpcserver_new(grpcConfig, g_deviceManager);
+    if (!g_grpcServer) {
+        log_error("Failed to create GRPC server");
+        server_config_free(grpcConfig);
+        ret = EXIT_FAILURE;
+        goto cleanup;
+    }
+    if (pthread_create(&g_grpcThread, NULL, grpc_server_thread, g_grpcServer) != 0) {
+        log_error("Failed to create GRPC server thread");
+        ret = EXIT_FAILURE;
+        goto cleanup;
+    }
+    server_config_free(grpcConfig);
+
+    // 等待 UDS 文件就绪（最多 3 秒）
+    if (wait_uds_ready(grpc_sock, 3000) != 0) {
+        log_warn("GRPC UDS not ready yet: %s", grpc_sock);
+    } else {
+        chmod(grpc_sock, 0666); // 关键：放宽 UDS 权限，便于 edgecore 回连
+        log_info("GRPC server started successfully (pre-register)");
+    }
+
+    // 再执行注册
+    log_info("Mapper will register to edgecore");
+    ret = RegisterMapper(1, &deviceList, &deviceCount, &deviceModelList, &modelCount);
+    if (ret != 0) {
+        log_error("Failed to register mapper to edgecore");
+        ret = EXIT_FAILURE;
+        goto cleanup;
+    }
+    log_info("Mapper register finished (devices: %d, models: %d)", deviceCount, modelCount);
     
     log_info("Initializing devices...");
     for (int i = 0; i < deviceCount; i++) {
@@ -225,50 +334,30 @@ int main(int argc, char *argv[]) {
     }
     
     log_info("Starting all devices...");
-    device_manager_start_all(g_deviceManager);
-    
+    // 原来是：device_manager_start_all(g_deviceManager);
+    // 改为放到独立线程，避免主线程被阻塞，便于 Ctrl+C 立即生效
+    if (pthread_create(&g_devStartThread, NULL, device_start_thread, g_deviceManager) != 0) {
+        log_error("Failed to create device_start_thread");
+    }
+
     const char *httpPortStr = config->common.http_port;
     if (httpPortStr && strlen(httpPortStr) > 0) {
         log_info("Starting HTTP server on port %s", httpPortStr);
-        g_httpServer = rest_server_new(g_deviceManager, httpPortStr); 
+        g_httpServer = rest_server_new(g_deviceManager, httpPortStr);
         if (!g_httpServer) {
             log_error("Failed to create HTTP server");
         } else {
-            rest_server_start(g_httpServer);                          
+            rest_server_start(g_httpServer);
             log_info("HTTP server started successfully");
         }
     } else {
         log_info("HTTP server disabled (no port configured)");
     }
-    
 
-    const char *grpc_sock = (config->grpc_server.socket_path[0]
-                             ? config->grpc_server.socket_path
-                             : "/tmp/mapper_dmi.sock");
-    log_info("Starting GRPC server on socket: %s",
-             config->grpc_server.socket_path[0] ? config->grpc_server.socket_path : "default");
-    ServerConfig *grpcConfig = server_config_new(grpc_sock, "customized");
-    
-    g_grpcServer = grpcserver_new(grpcConfig, g_deviceManager);     
-    if (!g_grpcServer) {
-        log_error("Failed to create GRPC server");
-        server_config_free(grpcConfig);
-        ret = EXIT_FAILURE;
-        goto cleanup;
-    }
-    
-    if (grpcserver_start(g_grpcServer) != 0) {                      
-        log_error("Failed to start GRPC server");
-        ret = EXIT_FAILURE;
-        goto cleanup;
-    }
-    
-    server_config_free(grpcConfig);
-    log_info("GRPC server started successfully");
     log_info("=== Mapper startup completed, running... ===");
-    
+
     while (running) {
-        usleep(1000000); 
+        usleep(1000000);
         
         if (g_deviceManager && g_deviceManager->deviceCount > 0) {
             static int health_check_counter = 0;
@@ -292,9 +381,7 @@ int main(int argc, char *argv[]) {
             }
         }
     }
-    
     log_info("Main loop exited, shutting down...");
-
 cleanup:
     cleanup_resources();
 
