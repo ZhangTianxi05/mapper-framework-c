@@ -1,11 +1,150 @@
 #include "device.h"
 #include "log/log.h"
 #include "common/const.h"
+#include "data/dbmethod/mysql/recorder.h"
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include <pthread.h>
 #include <unistd.h>
 #include <time.h>
+#include <ctype.h>
+
+// ==== Helpers moved to top (避免隐式声明) ====
+static int json_get_str(const char *json, const char *key, char *out, size_t outsz) {
+    if (!json || !key || !out || outsz == 0) return -1;
+    const char *p = strcasestr(json, key);
+    if (!p) return -1;
+    p = strchr(p, ':');
+    if (!p) return -1;
+    p++;
+    // 跳过空白
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+    // 可有引号
+    int quoted = 0;
+    if (*p == '\"') { quoted = 1; p++; }
+    size_t i = 0;
+    while (*p && i + 1 < outsz) {
+        if (quoted) {
+            if (*p == '\\' && p[1]) { // 简单跳过转义
+                p++;
+            } else if (*p == '\"') {
+                break;
+            }
+            out[i++] = *p++;
+        } else {
+            if (*p == ',' || *p == '}' || *p == ' ' || *p == '\r' || *p == '\n' || *p == '\t')
+                break;
+            out[i++] = *p++;
+        }
+    }
+    out[i] = 0;
+    return i > 0 ? 0 : -1;
+}
+static int json_get_int(const char *json, const char *key, int *out) {
+    char buf[32] = {0};
+    if (json_get_str(json, key, buf, sizeof(buf)) == 0) { *out = atoi(buf); return 0; }
+    return -1;
+}
+static void now_iso8601(char ts[32]) {
+    time_t t = time(NULL); struct tm tm; gmtime_r(&t, &tm);
+    strftime(ts, 32, "%Y-%m-%dT%H:%M:%SZ", &tm);
+}
+static int resolve_offset_by_name(const char *propName) {
+    if (!propName) return -1;
+    if (strcmp(propName, "temperature") == 0) return 1;
+    if (strcmp(propName, "threshold") == 0)  return 2;
+    return -1;
+}
+static int modbus_read_holding(const char *ip, int port, int offset, int *outVal) {
+    if (!ip || offset <= 0 || !outVal) return -1;
+    char cmd[256];
+    snprintf(cmd, sizeof(cmd),
+             "/usr/bin/mbpoll -1 -m tcp %s -p %d -a 1 -t 4 -r %d -c 1 2>/dev/null | tail -n1 | awk '{print $NF}'",
+             ip, port, offset);
+    FILE *fp = popen(cmd, "r");
+    if (!fp) return -1;
+    char buf[64] = {0};
+    if (!fgets(buf, sizeof(buf), fp)) { pclose(fp); return -1; }
+    pclose(fp);
+    *outVal = atoi(buf);
+    return 0;
+}
+// ==== End helpers ====
+
+// 新增: 去首尾空白
+static void trim_str(char *s) {
+    if (!s) return;
+    char *p = s;
+    while (*p && isspace((unsigned char)*p)) p++;
+    if (p != s) memmove(s, p, strlen(p)+1);
+    size_t len = strlen(s);
+    while (len > 0 && isspace((unsigned char)s[len-1])) {
+        s[--len] = 0;
+    }
+}
+
+// 仅保留允许字符 (主机/IP)
+static void sanitize_host(char *s) {
+    if (!s) return;
+    size_t w = 0;
+    for (size_t r = 0; s[r]; ++r) {
+        unsigned char c = (unsigned char)s[r];
+        if ((c >= '0' && c <= '9') ||
+            (c >= 'A' && c <= 'Z') ||
+            (c >= 'a' && c <= 'z') ||
+            c == '.' || c == '-' || c == '_' || c == ':' ) {
+            s[w++] = (char)c;
+        }
+        // 其它字符直接丢弃（包括反斜杠、n、t 等）
+    }
+    s[w] = 0;
+}
+
+// 去除因简易 JSON 解析残留的转义序列字母前缀 (例如 "\n\t127.0.0.1" -> "127.0.0.1")
+static void cleanup_escape_prefix(char *s) {
+    if (!s) return;
+    // 去掉开头若是 n/t/r 且后面紧跟数字或 1-2 个 n/t/r 再跟数字的情况
+    while (s[0] && (s[0]=='n' || s[0]=='t' || s[0]=='r')) {
+        if (s[1]>='0' && s[1]<='9') {
+            memmove(s, s+1, strlen(s+1)+1);
+            continue;
+        }
+        if ((s[1]=='n'||s[1]=='t'||s[1]=='r') && (s[2]>='0'&&s[2]<='9')) {
+            memmove(s, s+2, strlen(s+2)+1);
+            continue;
+        }
+        break;
+    }
+}
+
+static void normalize_host_port(const char *rawHost, int rawPort,
+                                char *outHost, size_t outHostSz, int *outPort) {
+    snprintf(outHost, outHostSz, "%s", (rawHost && *rawHost) ? rawHost : "");
+    trim_str(outHost);
+    sanitize_host(outHost);
+    if (outHost[0] == 0) {
+        const char *envH = getenv("MAPPER_MODBUS_ADDR");
+        if (envH && *envH) {
+            snprintf(outHost, outHostSz, "%s", envH);
+            trim_str(outHost);
+            sanitize_host(outHost);
+        }
+    }
+    if (outHost[0] == 0) {
+        snprintf(outHost, outHostSz, "%s", "127.0.0.1");
+    }
+    int p = rawPort;
+    if (p <= 0 || p > 65535) {
+        const char *envp = getenv("MAPPER_MODBUS_PORT");
+        if (envp && *envp) {
+            int ep = atoi(envp);
+            if (ep > 0 && ep <= 65535) p = ep;
+        }
+    }
+    if (p <= 0 || p > 65535) p = 1502;
+    *outPort = p;
+}
 
 // 设备数据处理线程
 static void *device_data_thread(void *arg) {
@@ -28,6 +167,40 @@ static void *device_data_thread(void *arg) {
         for (int i = 0; i < device->instance.twinsCount; i++) {
             Twin *twin = &device->instance.twins[i];
             if (twin && twin->propertyName) {
+                // 周期采集：读取寄存器当前值并回填 reported（不依赖 desired）
+                int offset = resolve_offset_by_name(twin->propertyName);
+                if (offset > 0) {
+                    char ip[64] = "127.0.0.1";
+                    int mbport = 1502;
+                    if (device->instance.pProtocol.configData) {
+                        json_get_str(device->instance.pProtocol.configData, "ip", ip, sizeof(ip));
+                        json_get_int(device->instance.pProtocol.configData, "port", &mbport);
+                        cleanup_escape_prefix(ip);   // 新增
+                    }
+                    int val = 0;
+                    if (modbus_read_holding(ip, mbport, offset, &val) == 0) {
+                        char buf[32];
+                        snprintf(buf, sizeof(buf), "%d", val);
+                        // 如果 reported 不存在或值不同则更新
+                        if (!twin->reported.value || strcmp(twin->reported.value, buf) != 0) {
+                            free(twin->reported.value);
+                            twin->reported.value = strdup(buf);
+                            char ts[32]; now_iso8601(ts);
+                            free(twin->reported.metadata.timestamp);
+                            twin->reported.metadata.timestamp = strdup(ts);
+                            log_debug("Polled %s offset=%d value=%s", twin->propertyName, offset, buf);
+                            // 写入 MySQL
+                            mysql_recorder_record(
+                                device->instance.namespace_ ? device->instance.namespace_ : "default",
+                                device->instance.name ? device->instance.name : "unknown",
+                                twin->propertyName,
+                                buf,
+                                (long long)time(NULL) * 1000
+                            );
+                        }
+                    }
+                }
+                // 仍保留处理 desired 的逻辑
                 device_deal_twin(device, twin);
             }
         }
@@ -243,6 +416,37 @@ Device *device_new(const DeviceInstance *instance, const DeviceModel *model) {
         }
     }
     
+    // 若无 twins，则基于 properties 自动创建一组简单 twins
+    if (device->instance.twinsCount == 0 && device->instance.propertiesCount > 0) {
+        device->instance.twinsCount = device->instance.propertiesCount;
+        device->instance.twins = calloc(device->instance.twinsCount, sizeof(Twin));
+        for (int i = 0; i < device->instance.twinsCount; ++i) {
+            DeviceProperty *p = &device->instance.properties[i];
+            Twin *tw = &device->instance.twins[i];
+            tw->propertyName = p->name ? strdup(p->name) : strdup("unknown");
+            tw->property = p;              // 关键：建立关联
+            tw->observedDesired.value = NULL;
+            tw->reported.value = NULL;
+        }
+        log_info("Auto-built %d twins from properties", device->instance.twinsCount);
+    }
+    
+    // 若无 methods，则生成默认 SetProperty 方法（映射全部属性）
+    if (device->instance.methodsCount == 0 && device->instance.propertiesCount > 0) {
+        device->instance.methodsCount = 1;
+        device->instance.methods = calloc(1, sizeof(DeviceMethod));
+        DeviceMethod *m = &device->instance.methods[0];
+        m->name = strdup("SetProperty");
+        m->propertyNamesCount = device->instance.propertiesCount;
+        m->propertyNames = calloc(m->propertyNamesCount, sizeof(char*));
+        for (int i = 0; i < m->propertyNamesCount; ++i) {
+            m->propertyNames[i] = device->instance.properties[i].name
+                                  ? strdup(device->instance.properties[i].name)
+                                  : strdup("unknown");
+        }
+        log_info("Auto-built default method SetProperty with %d properties", m->propertyNamesCount);
+    }
+    
     log_info("Device created successfully: %s", device->instance.name);
     return device;
 }
@@ -250,26 +454,26 @@ Device *device_new(const DeviceInstance *instance, const DeviceModel *model) {
 // 销毁设备
 void device_free(Device *device) {
     if (!device) return;
-    
-    // 停止设备
-    device_stop(device);
-    
+
+    // 不再无条件再次 stop，只有还在运行才停
+    if (device->dataThreadRunning || device->dataThread) {
+        device_stop(device);
+    }
+
     // 释放客户端
     if (device->client) {
         FreeClient(device->client);
     }
-    
-    // 释放基本字符串字段
+
+    // 基本字段
     free(device->instance.name);
     free(device->instance.namespace_);
     free(device->instance.model);
     free(device->instance.protocolName);
-    
-    // 释放协议配置（修正为结构体字段）
     free(device->instance.pProtocol.protocolName);
     free(device->instance.pProtocol.configData);
-    
-    // 释放 twins 数组
+
+    // twins
     if (device->instance.twins) {
         for (int i = 0; i < device->instance.twinsCount; i++) {
             Twin *twin = &device->instance.twins[i];
@@ -280,16 +484,26 @@ void device_free(Device *device) {
             free(twin->reported.value);
             free(twin->reported.metadata.timestamp);
             free(twin->reported.metadata.type);
+
             if (twin->property) {
-                free(twin->property->name);
-                // 释放其他 property 字段
-                free(twin->property);
+                // 判断是否指向 properties 数组内部；如果不是（说明曾经 deep copy），才释放
+                int embedded = 0;
+                if (device->instance.properties &&
+                    twin->property >= device->instance.properties &&
+                    twin->property < device->instance.properties + device->instance.propertiesCount) {
+                    embedded = 1;
+                }
+                if (!embedded) {
+                    free(twin->property->name);
+                    free(twin->property);
+                }
+                // 若 embedded == 1 则由后续 properties 统一释放，不能这里 free
             }
         }
         free(device->instance.twins);
     }
-    
-    // 释放 properties 数组
+
+    // properties
     if (device->instance.properties) {
         for (int i = 0; i < device->instance.propertiesCount; i++) {
             DeviceProperty *prop = &device->instance.properties[i];
@@ -297,12 +511,11 @@ void device_free(Device *device) {
             free(prop->propertyName);
             free(prop->modelName);
             free(prop->protocol);
-            // 释放其他字段...
         }
         free(device->instance.properties);
     }
-    
-    // 释放 methods 数组
+
+    // methods
     if (device->instance.methods) {
         for (int i = 0; i < device->instance.methodsCount; i++) {
             DeviceMethod *method = &device->instance.methods[i];
@@ -317,13 +530,11 @@ void device_free(Device *device) {
         }
         free(device->instance.methods);
     }
-    
-    // 释放模型字段
+
+    // model
     free(device->model.name);
     free(device->model.namespace_);
     free(device->model.description);
-    
-    // 释放模型属性
     if (device->model.properties) {
         for (int i = 0; i < device->model.propertiesCount; i++) {
             ModelProperty *prop = &device->model.properties[i];
@@ -337,14 +548,51 @@ void device_free(Device *device) {
         }
         free(device->model.properties);
     }
-    
-    // 释放设备状态
+
     free(device->status);
-    
-    // 销毁互斥锁
     pthread_mutex_destroy(&device->mutex);
-    
     free(device);
+}
+
+static void device_runtime_rebuild(Device *device) {
+    if (!device) return;
+    int rebuild = 0;
+    if (device->instance.propertiesCount > 0 &&
+        (device->instance.twinsCount == 0 || !device->instance.twins)) {
+        rebuild = 1;
+    } else {
+        // 检查是否有 twin 未绑定 property
+        for (int i = 0; i < device->instance.twinsCount; ++i) {
+            if (device->instance.twins[i].property == NULL) { rebuild = 1; break; }
+        }
+    }
+    if (rebuild) {
+        free(device->instance.twins);
+        device->instance.twinsCount = device->instance.propertiesCount;
+        device->instance.twins = calloc(device->instance.twinsCount, sizeof(Twin));
+        for (int i = 0; i < device->instance.twinsCount; ++i) {
+            DeviceProperty *p = &device->instance.properties[i];
+            Twin *tw = &device->instance.twins[i];
+            tw->propertyName = p->name ? strdup(p->name) : strdup("unknown");
+            tw->property = p;
+        }
+        log_warn("Runtime rebuilt %d twins for device %s",
+                 device->instance.twinsCount,
+                 device->instance.name ? device->instance.name : "(unknown)");
+    }
+    if (device->instance.methodsCount == 0 && device->instance.propertiesCount > 0) {
+        device->instance.methodsCount = 1;
+        device->instance.methods = calloc(1, sizeof(DeviceMethod));
+        DeviceMethod *m = &device->instance.methods[0];
+        m->name = strdup("SetProperty");
+        m->propertyNamesCount = device->instance.propertiesCount;
+        m->propertyNames = calloc(m->propertyNamesCount, sizeof(char*));
+        for (int i = 0; i < m->propertyNamesCount; ++i) {
+            m->propertyNames[i] = device->instance.properties[i].name ?
+                                  strdup(device->instance.properties[i].name) : strdup("unknown");
+        }
+        log_warn("Runtime rebuilt default method SetProperty (%d props)", m->propertyNamesCount);
+    }
 }
 
 // 其余函数保持不变...
@@ -353,7 +601,7 @@ int device_start(Device *device) {
     if (!device) return -1;
     
     pthread_mutex_lock(&device->mutex);
-    
+    device_runtime_rebuild(device);   // 新增：启动前兜底
     log_info("Starting device: %s", device->instance.name);
     
     // 检查设备是否已启动
@@ -373,8 +621,7 @@ int device_start(Device *device) {
         }
     }
     
-    // 设置设备状态
-    device_set_status(device, DEVICE_STATUS_OK);
+    device_set_status(device, DEVICE_STATUS_OK);  // 新增：确保数据线程进入采集
     
     // 启动数据处理线程
     device->dataThreadRunning = 1;
@@ -386,7 +633,7 @@ int device_start(Device *device) {
         return -1;
     }
     
-    pthread_detach(device->dataThread);
+    // 不再 detach，清理阶段/stop 时可 join
     
     pthread_mutex_unlock(&device->mutex);
     
@@ -416,8 +663,17 @@ int device_stop(Device *device) {
     
     pthread_mutex_unlock(&device->mutex);
     
-    // 等待数据线程结束
-    usleep(100000); // 100ms
+    // 等待数据线程退出（最多等待 500ms * 10 次）
+    if (device->dataThread) {
+        for (int i = 0; i < 10; ++i) {
+            // 简单检查标志
+            if (!device->dataThreadRunning) break;
+            usleep(50000);
+        }
+        pthread_cancel(device->dataThread); // 若线程逻辑内已检查 stopChan 会自然退出; 取消作兜底
+        pthread_join(device->dataThread, NULL);
+        device->dataThread = 0;
+    }
     
     log_info("Device %s stopped successfully", device->instance.name);
     return 0;
@@ -448,35 +704,6 @@ int device_restart(Device *device) {
 
 // 处理设备 Twin 数据（暂时简单实现）
 // 读取协议配置里的 ip/port（简易解析）
-static int json_get_str(const char *json, const char *key, char *out, size_t outsz) {
-    if (!json || !key || !out || outsz == 0) return -1;
-    const char *p = strcasestr(json, key);
-    if (!p) return -1;
-    p = strchr(p, ':'); if (!p) return -1; p++;
-    while (*p == ' ' || *p == '\"') p++;
-    size_t i = 0;
-    while (*p && *p != '\"' && *p != ',' && *p != '}' && i + 1 < outsz) out[i++] = *p++;
-    out[i] = '\0';
-    return i > 0 ? 0 : -1;
-}
-static int json_get_int(const char *json, const char *key, int *out) {
-    char buf[32] = {0};
-    if (json_get_str(json, key, buf, sizeof(buf)) == 0) { *out = atoi(buf); return 0; }
-    return -1;
-}
-static void now_iso8601(char ts[32]) {
-    time_t t = time(NULL); struct tm tm; gmtime_r(&t, &tm);
-    strftime(ts, 32, "%Y-%m-%dT%H:%M:%SZ", &tm);
-}
-// 演示：根据属性名映射 offset（你的 CR: temperature=1, threshold=2）
-static int resolve_offset_by_name(const char *propName) {
-    if (!propName) return -1;
-    if (strcmp(propName, "temperature") == 0) return 1;
-    if (strcmp(propName, "threshold") == 0) return 2;
-    return -1;
-}
-
-// 替换原空实现：按 desired 写入 Modbus，并回填 reported
 int device_deal_twin(Device *device, const Twin *twin_in) {
     if (!device || !twin_in) return -1;
     Twin *twin = (Twin*)twin_in;
@@ -500,6 +727,7 @@ int device_deal_twin(Device *device, const Twin *twin_in) {
     if (device->instance.pProtocol.configData) {
         json_get_str(device->instance.pProtocol.configData, "ip", ip, sizeof(ip));
         json_get_int(device->instance.pProtocol.configData, "port", &port);
+        cleanup_escape_prefix(ip);   // 新增
     }
 
     int offset = resolve_offset_by_name(twin->propertyName);
@@ -511,15 +739,37 @@ int device_deal_twin(Device *device, const Twin *twin_in) {
     int value = atoi(desired);
 
     // 注意：写保持寄存器不能带 -c
-    char cmd[256];
+    char hostBuf[128];
+    int portFixed;
+    normalize_host_port(ip, port, hostBuf, sizeof(hostBuf), &portFixed);
+
+    int timeout_s = 2;
+    const char *env_to = getenv("MAPPER_MBPOLL_TIMEOUT_S");
+    if (env_to && *env_to) {
+        int tv = atoi(env_to);
+        if (tv > 0 && tv < 30) timeout_s = tv;
+    }
+
+    char cmd[512];
     snprintf(cmd, sizeof(cmd),
-             "/usr/bin/mbpoll -1 -m tcp %s -p %d -a 1 -t 4 -r %d %d >/dev/null 2>&1",
-             ip, port, offset, value);
-    int rc = system(cmd);
-    if (rc != 0) {
-        log_error("Twin %s: mbpoll write failed (rc=%d). cmd=%s", prop, rc, cmd);
+             "timeout %d /usr/bin/mbpoll -1 -m tcp %s -p %d -a 1 -t 4 -r %d %d >/dev/null 2>&1",
+             timeout_s, hostBuf, portFixed, offset, value);
+
+    log_info("Twin %s: exec cmd=%s", prop, cmd);
+
+    int rcRaw = system(cmd);
+    int exit_code = -1;
+    if (rcRaw != -1) {
+        if (WIFEXITED(rcRaw)) exit_code = WEXITSTATUS(rcRaw);
+        else if (WIFSIGNALED(rcRaw)) exit_code = 128 + WTERMSIG(rcRaw);
+    }
+    if (exit_code != 0) {
+        log_error("Twin %s: mbpoll write failed (exit=%d raw=%d). cmd=%s",
+                  prop, exit_code, rcRaw, cmd);
         return -1;
     }
+    log_info("Twin %s: mbpoll write ok host=%s port=%d offset=%d val=%d",
+             prop, hostBuf, portFixed, offset, value);
 
     // 回填 reported（本地内存）
     free(twin->reported.value);
@@ -529,42 +779,15 @@ int device_deal_twin(Device *device, const Twin *twin_in) {
     twin->reported.metadata.timestamp = strdup(ts);
 
     log_info("Twin %s write success: offset=%d value=%d (ip=%s:%d); reported updated",
-             prop, offset, value, ip, port);
-    return 0;
-}
-
-// 处理设备数据
-int device_data_process(Device *device, const char *method, const char *config, 
-                       const char *propertyName, const void *data) {
-    if (!device || !method) return -1;
-    
-    log_debug("Processing device data: method=%s, property=%s", method, propertyName);
-    
-    // TODO: 根据方法类型分发处理
-    return 0;
-}
-
-// 获取设备状态
-const char *device_get_status(Device *device) {
-    if (!device) return DEVICE_STATUS_UNKNOWN;
-    
-    pthread_mutex_lock(&device->mutex);
-    const char *status = device->status;
-    pthread_mutex_unlock(&device->mutex);
-    
-    return status;
-}
-
-// 设置设备状态
-int device_set_status(Device *device, const char *status) {
-    if (!device || !status) return -1;
-    
-    pthread_mutex_lock(&device->mutex);
-    free(device->status);
-    device->status = strdup(status);
-    pthread_mutex_unlock(&device->mutex);
-    
-    log_debug("Device %s status changed to: %s", device->instance.name, status);
+             prop, offset, value, hostBuf, portFixed);
+    // 写成功后落库
+    mysql_recorder_record(
+        device->instance.namespace_ ? device->instance.namespace_ : "default",
+        device->instance.name ? device->instance.name : "unknown",
+        twin->propertyName ? twin->propertyName : "unknown",
+        desired,
+        (long long)time(NULL) * 1000
+    );
     return 0;
 }
 
@@ -586,22 +809,22 @@ DeviceManager *device_manager_new(void) {
         return NULL;
     }
     
+    manager->stopped = 0;   // 新增初始化
     return manager;
 }
 
 // 销毁设备管理器
 void device_manager_free(DeviceManager *manager) {
     if (!manager) return;
-    
-    device_manager_stop_all(manager);
-    
+    if (!manager->stopped) {            // 避免重复 stop
+        device_manager_stop_all(manager);
+    }
     pthread_mutex_lock(&manager->managerMutex);
     for (int i = 0; i < manager->deviceCount; i++) {
         device_free(manager->devices[i]);
     }
     free(manager->devices);
     pthread_mutex_unlock(&manager->managerMutex);
-    
     pthread_mutex_destroy(&manager->managerMutex);
     free(manager);
 }
@@ -675,6 +898,21 @@ Device *device_manager_get(DeviceManager *manager, const char *deviceId) {
             return device;
         }
     }
+
+    // 兼容 namespace.name 或 namespace/name 形式：取最后一段再试
+    const char *sep = strrchr(deviceId, '.');
+    if (!sep) sep = strrchr(deviceId, '/');
+    if (sep && *(sep + 1)) {
+        const char *shortId = sep + 1;
+        for (int i = 0; i < manager->deviceCount; i++) {
+            if (manager->devices[i] && manager->devices[i]->instance.name &&
+                strcmp(manager->devices[i]->instance.name, shortId) == 0) {
+                Device *device = manager->devices[i];
+                pthread_mutex_unlock(&manager->managerMutex);
+                return device;
+            }
+        }
+    }
     
     pthread_mutex_unlock(&manager->managerMutex);
     return NULL;
@@ -702,15 +940,16 @@ int device_manager_start_all(DeviceManager *manager) {
 // 停止所有设备
 int device_manager_stop_all(DeviceManager *manager) {
     if (!manager) return -1;
-    
+    if (manager->stopped) {             // 幂等
+        log_debug("device_manager_stop_all: already stopped");
+        return 0;
+    }
     pthread_mutex_lock(&manager->managerMutex);
-    
     for (int i = 0; i < manager->deviceCount; i++) {
         device_stop(manager->devices[i]);
     }
-    
     pthread_mutex_unlock(&manager->managerMutex);
-    
+    manager->stopped = 1;               // 标记
     log_info("Stopped all devices");
     return 0;
 }

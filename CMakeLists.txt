@@ -126,41 +126,33 @@ set(COMMON_SOURCES
   common/datamodel.c
   common/event.c
   util/parse/grpc.c
-
   # Protobuf 生成
   dmi/v1beta1/api.pb-c.c
   dmi/v1beta1/api.pb.cc
   dmi/v1beta1/api.grpc.pb.cc
   google/protobuf/any.pb-c.c
   google/protobuf/wrappers.pb-c.c
-
   # 网络服务
   httpserver/httpserver.c
   grpcclient/register.cc
   grpcserver/server.cc
-
   # 设备管理
   device/device.c
   device/devicestatus.c
   device/devicetwin.c
   device/dev_panel.c
-
   # 驱动框架
   driver/driver.c
-
   # 数据库客户端
   data/dbmethod/mysql/mysql_client.c
-  data/dbmethod/mysql/handler.c 
+  data/dbmethod/mysql/recorder.c          # 新增
   data/dbmethod/influxdb2/influxdb2_client.c
-  data/dbmethod/influxdb2/handler.c 
   data/dbmethod/redis/redis_client.c
-  data/dbmethod/redis/handler.c
 )
 
 if(TAOS_FOUND)
   list(APPEND COMMON_SOURCES
     data/dbmethod/tdengine/tdengine_client.c
-    data/dbmethod/tdengine/handler.c
   )
 endif()
 

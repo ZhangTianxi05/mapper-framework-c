@@ -4,7 +4,7 @@
 #include "log/log.h"
 #include <string.h>
 #include <stdlib.h>
-
+#include <stdio.h>
 // 从 DeviceManager 中获取设备孪生结果
 int dev_panel_get_twin_result(DeviceManager *manager, const char *deviceId, 
                              const char *propertyName, char **value, char **datatype) {
@@ -85,6 +85,12 @@ int dev_panel_get_device_method(DeviceManager *manager, const char *deviceId,
         *method_map = NULL; *method_count = 0;
         *property_map = NULL; *property_count = 0;
         return 0;
+    }
+
+    if (device->instance.methodsCount == 0) {
+        log_warn("Device %s has no methods (methodsCount=0)", deviceId);
+    } else {
+        log_debug("Device %s methodsCount=%d", deviceId, device->instance.methodsCount);
     }
 
     // 方法列表（一维字符串数组）

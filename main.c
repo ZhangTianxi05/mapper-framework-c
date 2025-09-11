@@ -10,7 +10,8 @@
 #include <pthread.h>
 #include <sys/stat.h>
 #include <limits.h>
-
+#include <cjson/cJSON.h>
+#include <errno.h>
 #include "log/log.h"
 #include "config/config.h"
 #include "device/device.h"
@@ -20,6 +21,7 @@
 #include "common/configmaptype.h"
 #include "common/const.h"
 #include "data/dbmethod/mysql/mysql_client.h"  // 新增
+#include "data/dbmethod/mysql/recorder.h"   // 新增
 
 static volatile int running = 1;
 static DeviceManager *g_deviceManager = NULL;
@@ -107,15 +109,19 @@ static void cleanup_resources(void) {
         }
         grpcserver_free(g_grpcServer);
         g_grpcServer = NULL;
-
-        if (g_grpcSockPath[0]) {
-            if (unlink(g_grpcSockPath) != 0) {
-                log_warn("failed to remove uds socket: %s", g_grpcSockPath);
+    }
+    if (g_grpcSockPath[0]) {
+        if (unlink(g_grpcSockPath) != 0) {
+            if (errno == ENOENT) {
+                log_info("uds socket already gone: %s", g_grpcSockPath);
             } else {
-                log_info("uds socket removed: %s", g_grpcSockPath);
+                log_warn("unlink(%s) failed: errno=%d (%s)",
+                         g_grpcSockPath, errno, strerror(errno));
             }
-            g_grpcSockPath[0] = '\0';
+        } else {
+            log_info("uds socket removed: %s", g_grpcSockPath);
         }
+        g_grpcSockPath[0] = '\0';
     }
     log_info("[cleanup] gRPC done");
 
@@ -195,11 +201,18 @@ int main(int argc, char *argv[]) {
              config->database.mysql.addr[0] ? config->database.mysql.addr : "(empty)",
              config->database.mysql.database[0] ? config->database.mysql.database : "(empty)",
              config->database.mysql.username[0] ? config->database.mysql.username : "(empty)");
+    log_info("MySQL ssl_mode=%s", config->database.mysql.ssl_mode[0] ? config->database.mysql.ssl_mode : "DISABLED");
+    setenv("MYSQL_SSL_MODE",
+       config->database.mysql.ssl_mode[0] ? config->database.mysql.ssl_mode : "DISABLED",
+       1);
 
-    // 环境变量兜底：如果解析器没填 enabled，可用 MYSQL_ENABLED=true/1 打开
-    if (!config->database.mysql.enabled) {
-        const char *en = getenv("MYSQL_ENABLED");
-        if (en && (*en=='1' || strcasecmp(en, "true")==0)) {
+    // 环境变量双向覆盖：1/true 开启，0/false 关闭
+    const char *env_mysql = getenv("MYSQL_ENABLED");
+    if (env_mysql && *env_mysql) {
+        if (*env_mysql=='0' || strcasecmp(env_mysql,"false")==0) {
+            log_warn("MYSQL_ENABLED env overrides config: disabling MySQL");
+            config->database.mysql.enabled = 0;
+        } else if (*env_mysql=='1' || strcasecmp(env_mysql,"true")==0) {
             log_warn("MYSQL_ENABLED env overrides config: enabling MySQL");
             config->database.mysql.enabled = 1;
         }
@@ -210,10 +223,17 @@ int main(int argc, char *argv[]) {
         // 放大缓冲，消除 snprintf 警告
         char json[512];
         snprintf(json, sizeof(json),
-                 "{\"addr\":\"%s\",\"database\":\"%s\",\"userName\":\"%s\"}",
+                 "{\"addr\":\"%s\",\"database\":\"%s\",\"userName\":\"%s\",\"password\":\"%s\",\"port\":%d,\"ssl_mode\":\"%s\"}",
                  config->database.mysql.addr[0] ? config->database.mysql.addr : "127.0.0.1",
                  config->database.mysql.database[0] ? config->database.mysql.database : "testdb",
-                 config->database.mysql.username[0] ? config->database.mysql.username : "mapper");
+                 config->database.mysql.username[0] ? config->database.mysql.username : "mapper",
+                 config->database.mysql.password[0] ? config->database.mysql.password : "",
+                 config->database.mysql.port > 0 ? config->database.mysql.port : 3306,
+                 config->database.mysql.ssl_mode[0] ? config->database.mysql.ssl_mode : "DISABLED");
+        // 同步给环境变量（若 mysql_parse_client_config 内只读 env 或优先 env）
+        if (config->database.mysql.password[0]) {
+            setenv("MYSQL_PASSWORD", config->database.mysql.password, 1);
+        }
 
         MySQLClientConfig clientCfg = {0};
         if (mysql_parse_client_config(json, &clientCfg) != 0) {
@@ -225,8 +245,9 @@ int main(int argc, char *argv[]) {
                 log_error("MySQL init failed (host=%s db=%s user=%s). Set MYSQL_PASSWORD and MYSQL_PORT if needed.",
                           clientCfg.addr, clientCfg.database, clientCfg.userName);
             } else {
-                log_info("MySQL connected (host=%s db=%s user=%s)",
-                         clientCfg.addr, clientCfg.database, clientCfg.userName);
+                log_info("MySQL connected (host=%s db=%s user=%s pw_len=%zu)",
+                         clientCfg.addr, clientCfg.database, clientCfg.userName,
+                         clientCfg.password ? strlen(clientCfg.password) : 0);
                 DataModel dm = {0};
                 dm.namespace_   = "default";
                 dm.deviceName   = "mysql-selftest";
@@ -239,6 +260,7 @@ int main(int argc, char *argv[]) {
                 } else {
                     log_error("MySQL self-test insert failed");
                 }
+                mysql_recorder_set_db(g_mysql);
             }
         }
     } else {
@@ -384,7 +406,7 @@ int main(int argc, char *argv[]) {
     log_info("Main loop exited, shutting down...");
 cleanup:
     cleanup_resources();
-
+    
     if (config) {
         config_free(config);
     }

@@ -61,11 +61,17 @@ static int handle_device_read(RestServer *server, struct MHD_Connection *connect
     char *value = NULL, *datatype = NULL;
     int err = dev_panel_get_twin_result(server->dev_panel, deviceID, property, &value, &datatype);
     if (err != 0) {
-        char msg[512];
+        cJSON *resp = cJSON_CreateObject();
+        char timebuf[64];
+        get_time_str(timebuf, sizeof(timebuf));
+        cJSON_AddStringToObject(resp, "apiVersion", API_VERSION);
+        cJSON_AddNumberToObject(resp, "statusCode", 500);
+        cJSON_AddStringToObject(resp, "timeStamp", timebuf);
+        char msg[256];
         snprintf(msg, sizeof(msg), "Get device data error: %d", err);
-        struct MHD_Response *response = MHD_create_response_from_buffer(strlen(msg), (void*)msg, MHD_RESPMEM_PERSISTENT);
-        int ret = MHD_queue_response(connection, MHD_HTTP_INTERNAL_SERVER_ERROR, response);
-        MHD_destroy_response(response);
+        cJSON_AddStringToObject(resp, "message", msg);
+        int ret = send_json_response(connection, resp, MHD_HTTP_INTERNAL_SERVER_ERROR);
+        cJSON_Delete(resp);
         return ret;
     }
     cJSON *resp = cJSON_CreateObject();

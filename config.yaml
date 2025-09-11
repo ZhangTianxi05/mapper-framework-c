@@ -12,7 +12,10 @@ common:
 
 database:
   mysql:
-    enabled: true         # 关键：启用
-    addr: "127.0.0.1"     # 主机，不带端口
+    enabled: true
+    addr: "127.0.0.1"
     database: "testdb"
-    username: "mapper"    # 密码从环境变量读取
+    username: "mapper"
+    password: "123456"
+    port: 3306
+    ssl_mode: "DISABLED"   # 新增：禁用 SSL

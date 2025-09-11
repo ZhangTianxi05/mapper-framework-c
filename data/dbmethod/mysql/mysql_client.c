@@ -1,16 +1,37 @@
 #include "mysql_client.h"
 #include "log/log.h"
 
-#include <mysql.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
 #include <cjson/cJSON.h>
+#include <ctype.h>
+#include <mysql.h>
+#ifndef MYSQL_VERSION_ID
+#define MYSQL_VERSION_ID 0
+#endif
 
 static const char* getenv_def(const char *k, const char *defv) {
     const char *v = getenv(k);
     return (v && *v) ? v : defv;
+}
+
+// 可选：打印错误码辅助调试
+static void log_mysql_conn_error(MYSQL *conn, const char *phase) {
+    if (!conn) return;
+    log_error("%s: (%u) %s", phase, mysql_errno(conn), mysql_error(conn));
+}
+
+// 新增: 允许通过调用方注入 ssl_mode；如果没有配置则默认 DISABLED
+static const char* normalize_ssl_mode(const char *m) {
+    if (!m || !*m) return "DISABLED";
+    if (!strcasecmp(m, "DISABLED"))  return "DISABLED";
+    if (!strcasecmp(m, "PREFERRED")) return "PREFERRED";
+    if (!strcasecmp(m, "REQUIRED"))  return "REQUIRED";
+    if (!strcasecmp(m, "VERIFY_CA")) return "VERIFY_CA";
+    if (!strcasecmp(m, "VERIFY_IDENTITY")) return "VERIFY_IDENTITY";
+    return "DISABLED";
 }
 
 int mysql_parse_client_config(const char *json, MySQLClientConfig *out) {
@@ -28,68 +49,121 @@ int mysql_parse_client_config(const char *json, MySQLClientConfig *out) {
     out->userName = strdup(env_user);
     out->password = env_pwd ? strdup(env_pwd) : NULL;
 
+    const char *env_port = getenv("MYSQL_PORT");
+    int portVal = (env_port && *env_port) ? atoi(env_port) : 3306;
+
     // 如提供了 JSON，则覆盖对应字段
     if (json && *json) {
         cJSON *root = cJSON_Parse(json);
         if (root) {
-            cJSON *addr = cJSON_GetObjectItem(root, "addr");
-            cJSON *database = cJSON_GetObjectItem(root, "database");
-            cJSON *userName = cJSON_GetObjectItem(root, "userName");
-            cJSON *password = cJSON_GetObjectItem(root, "password");
-
-            if (addr && cJSON_IsString(addr) && addr->valuestring) {
-                free(out->addr); out->addr = strdup(addr->valuestring);
-            }
-            if (database && cJSON_IsString(database) && database->valuestring) {
-                free(out->database); out->database = strdup(database->valuestring);
-            }
-            if (userName && cJSON_IsString(userName) && userName->valuestring) {
-                free(out->userName); out->userName = strdup(userName->valuestring);
-            }
-            if (password && cJSON_IsString(password) && password->valuestring) {
+            cJSON *jaddr = cJSON_GetObjectItem(root, "addr");
+            cJSON *jdb   = cJSON_GetObjectItem(root, "database");
+            cJSON *juser = cJSON_GetObjectItem(root, "userName");
+            cJSON *jpwd  = cJSON_GetObjectItem(root, "password");
+            cJSON *jport = cJSON_GetObjectItem(root, "port");
+            cJSON *jssl  = cJSON_GetObjectItem(root, "ssl_mode");
+            if (jaddr && cJSON_IsString(jaddr)) { free(out->addr); out->addr = strdup(jaddr->valuestring); }
+            if (jdb && cJSON_IsString(jdb))     { free(out->database); out->database = strdup(jdb->valuestring); }
+            if (juser && cJSON_IsString(juser)) { free(out->userName); out->userName = strdup(juser->valuestring); }
+            if (jpwd && cJSON_IsString(jpwd)) {
                 if (out->password) free(out->password);
-                out->password = strdup(password->valuestring);
+                out->password = strdup(jpwd->valuestring);
+            }
+            if (jport && cJSON_IsNumber(jport)) out->port = (int)jport->valuedouble;
+            if (jssl && cJSON_IsString(jssl)) {
+                // 允许覆盖 ssl_mode（简单：放入环境方便后续读取）
+                setenv("MYSQL_SSL_MODE", jssl->valuestring, 1);
             }
             cJSON_Delete(root);
         }
     }
+    out->port = (portVal > 0 ? portVal : 3306);
     return 0;
 }
 
-// ...existing code...
 int mysql_init_client(MySQLDataBaseConfig *db) {
     if (!db) return -1;
-
     db->conn = mysql_init(NULL);
     if (!db->conn) {
         log_error("mysql_init failed");
         return -1;
     }
 
-    // 最简化：只设置超时，其他都用默认
     unsigned int timeout = 10;
     mysql_options(db->conn, MYSQL_OPT_CONNECT_TIMEOUT, &timeout);
 
-    unsigned int port = 3306;
-    const char *portEnv = getenv("MYSQL_PORT");
-    if (portEnv && *portEnv) port = (unsigned int)atoi(portEnv);
-
-    const char *host = db->config.addr ? db->config.addr : "127.0.0.1";
+    const char *host = (db->config.addr && *db->config.addr) ? db->config.addr : "127.0.0.1";
+    unsigned int port = (db->config.port > 0) ? (unsigned int)db->config.port : 3306;
     const char *user = db->config.userName ? db->config.userName : "mapper";
-    const char *pass = db->config.password ? db->config. password : "";
-    const char *dbnm = db->config.database ? db->config.database : "testdb";
+    const char *pass = db->config.password;
+    if (!pass || !*pass) {
+        const char *envp = getenv("MYSQL_PASSWORD");
+        if (envp && *envp) pass = envp;
+    }
+    if (!pass) pass = "";
+    const char *dbname = db->config.database ? db->config.database : "testdb";
 
-    // 完全不传 client_flag，让库自动协商
-    if (!mysql_real_connect(db->conn, host, user, pass, dbnm, port, NULL, 0)) {
-        log_error("mysql_real_connect failed: %s", mysql_error(db->conn));
+    // 读取 ssl_mode：优先配置文件，再看环境变量 MYSQL_SSL_MODE
+    const char *cfg_ssl = NULL;
+    // （如果以后把 ssl_mode 放进 MySQLClientConfig，可在 parse 时直接赋值）
+    const char *env_ssl = getenv("MYSQL_SSL_MODE");
+    if (env_ssl && *env_ssl) cfg_ssl = env_ssl;
+
+    // 允许 main 在配置解析后放入全局 config->database.mysql.ssl_mode
+    // 这里通过全局 weak extern（可选）或直接环境变量；简单起见仅环境变量
+    const char *ssl_mode = normalize_ssl_mode(cfg_ssl);
+
+#if (MYSQL_VERSION_ID >= 50711)
+    // 5.7.11+ 支持 MYSQL_OPT_SSL_MODE
+    enum mysql_ssl_mode mode_enum = SSL_MODE_DISABLED;
+    if (!strcasecmp(ssl_mode, "PREFERRED")) mode_enum = SSL_MODE_PREFERRED;
+    else if (!strcasecmp(ssl_mode, "REQUIRED")) mode_enum = SSL_MODE_REQUIRED;
+    else if (!strcasecmp(ssl_mode, "VERIFY_CA")) mode_enum = SSL_MODE_VERIFY_CA;
+    else if (!strcasecmp(ssl_mode, "VERIFY_IDENTITY")) mode_enum = SSL_MODE_VERIFY_IDENTITY;
+    else mode_enum = SSL_MODE_DISABLED;
+
+    if (mysql_options(db->conn, MYSQL_OPT_SSL_MODE, &mode_enum) != 0) {
+        log_warn("mysql_options(MYSQL_OPT_SSL_MODE=%s) failed, continuing", ssl_mode);
+    } else {
+        log_info("MySQL SSL mode set to %s", ssl_mode);
+    }
+#else
+    // 老版本：尝试清除 CLIENT_SSL（部分版本仍可能忽略）
+    log_info("MySQL client (VERSION_ID=%d) lacks MYSQL_OPT_SSL_MODE; forcing non-SSL attempt", MYSQL_VERSION_ID);
+#endif
+
+#ifdef MYSQL_OPT_PROTOCOL
+    unsigned int proto = MYSQL_PROTOCOL_TCP;
+    mysql_options(db->conn, MYSQL_OPT_PROTOCOL, &proto);
+#endif
+
+    // 仅在显式提供 MYSQL_UNIX_SOCKET 时才走 socket
+    const char *unix_sock = getenv("MYSQL_UNIX_SOCKET");
+    if (!(unix_sock && *unix_sock)) unix_sock = NULL;
+
+    log_info("MySQL connect try host=%s port=%u socket=%s db=%s user=%s ssl_mode=%s pw_len=%zu",
+             host, port, unix_sock ? unix_sock : "(none)", dbname, user, ssl_mode, strlen(pass));
+
+    if (!mysql_real_connect(db->conn,
+                            host,
+                            user,
+                            pass,
+                            dbname,
+                            unix_sock ? 0 : port,
+                            unix_sock,
+                            0)) {
+        log_mysql_conn_error(db->conn, "mysql_real_connect");   // 新增：实际调用，消除未使用告警
+        log_error("mysql_real_connect failed (%u): %s",
+                  mysql_errno(db->conn), mysql_error(db->conn));
         mysql_close(db->conn);
         db->conn = NULL;
         return -1;
     }
 
+    log_info("MySQL connected proto=%s ssl=maybe(%s)", unix_sock ? "unix" : "tcp", ssl_mode);
     return 0;
 }
-// ...existing code...
+
 void mysql_close_client(MySQLDataBaseConfig *db) {
     if (db && db->conn) {
         mysql_close(db->conn);

@@ -9,7 +9,8 @@ typedef struct {
     char *addr;
     char *database;
     char *userName;
-    char *password; // 从环境变量读取
+    char *password;
+    int   port;        // 新增：端口（0 表示未显式设置）
 } MySQLClientConfig;
 
 typedef struct {

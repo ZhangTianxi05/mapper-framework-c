@@ -22,10 +22,11 @@ public:
     GrpcServer(const ServerConfig& cfg, std::shared_ptr<DevPanel> devPanel);
     int Start();
     void Stop();
-
 private:
     ServerConfig cfg_;
     std::shared_ptr<DevPanel> devPanel_;
+    std::unique_ptr<grpc::Server> server_;
+    bool stopped_ = false;   // 防止重复 Stop
 };
 
 #else

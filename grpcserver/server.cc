@@ -107,7 +107,32 @@ public:
                 if (desired.empty()) continue;
                 int wrc = write_modbus_direct(propName, desired);
                 log_info("Force DirectWrite prop=%s val=%s rc=%d", propName.c_str(), desired.c_str(), wrc);
-                if (wrc == 0) ok++;
+                if (wrc == 0) {
+                    ok++;
+                    // 同步更新本地 twin，避免数据线程继续写旧值
+                    Device *local = device_manager_get(g_device_manager, dev.name().c_str());
+                    if (!local && !dev.namespace_().empty()) {
+                        std::string key = dev.namespace_() + "/" + dev.name();
+                        local = device_manager_get(g_device_manager, key.c_str());
+                    }
+                    if (local && local->instance.twins) {
+                        for (int t = 0; t < local->instance.twinsCount; ++t) {
+                            Twin *tw = &local->instance.twins[t];
+                            if (tw && tw->propertyName &&
+                                propName == tw->propertyName) {
+                                free(tw->observedDesired.value);
+                                tw->observedDesired.value = strdup(desired.c_str());
+                                free(tw->reported.value);
+                                tw->reported.value = strdup(desired.c_str());
+                                char ts[32]; time_t tt=time(NULL); struct tm tm; gmtime_r(&tt,&tm);
+                                strftime(ts,32,"%Y-%m-%dT%H:%M:%SZ",&tm);
+                                free(tw->reported.metadata.timestamp);
+                                tw->reported.metadata.timestamp = strdup(ts);
+                                break;
+                            }
+                        }
+                    }
+                }
             }
             if (ok > 0) return ::grpc::Status::OK;
             // 强制直写失败则继续尝试正常路径
@@ -179,7 +204,7 @@ GrpcServer::GrpcServer(const ServerConfig& cfg, std::shared_ptr<DevPanel> devPan
 
 int GrpcServer::Start() {
     log_info("uds socket path: %s", cfg_.sockPath.c_str());
-    
+
     struct stat st;
     if (stat(cfg_.sockPath.c_str(), &st) == 0) {
         if (unlink(cfg_.sockPath.c_str()) != 0) {
@@ -197,12 +222,13 @@ int GrpcServer::Start() {
     builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
     builder.RegisterService(&service);
 
-    std::unique_ptr<grpc::Server> server(builder.BuildAndStart());
-    if (!server) {
+    server_ = builder.BuildAndStart();
+    if (!server_) {
         log_error("failed to start grpc server");
         return -1;
     }
-     for (int i = 0; i < 100; ++i) {
+    // 等待 socket 出现
+    for (int i = 0; i < 100; ++i) {
         if (stat(cfg_.sockPath.c_str(), &st) == 0) {
             if (chmod(cfg_.sockPath.c_str(), 0666) != 0) {
                 log_warn("chmod %s to 0666 failed", cfg_.sockPath.c_str());
@@ -211,19 +237,18 @@ int GrpcServer::Start() {
         }
         usleep(10000);
     }
-    
     log_info("start grpc server on %s", server_address.c_str());
-    server->Wait();
+    server_->Wait();  // 被 Stop()->Shutdown() 唤醒
     return 0;
 }
 
 void GrpcServer::Stop() {
+    if (stopped_) return;
+    stopped_ = true;
     log_info("Stopping gRPC server...");
-    
-    if (unlink(cfg_.sockPath.c_str()) != 0) {
-        log_warn("failed to remove uds socket: %s", cfg_.sockPath.c_str());
+    if (server_) {
+        server_->Shutdown();   // 唤醒 Wait
     }
-    
     log_info("gRPC server stopped");
 }
 
@@ -470,7 +495,6 @@ void grpcserver_stop(GrpcServer *server) {
         log_warn("Trying to stop NULL gRPC server");
         return;
     }
-    
     try {
         server->Stop();
     } catch (const std::exception& e) {
@@ -480,12 +504,8 @@ void grpcserver_stop(GrpcServer *server) {
 
 void grpcserver_free(GrpcServer *server) {
     if (server) {
-        try {
-            server->Stop(); 
-            delete server;
-        } catch (const std::exception& e) {
-            log_error("Failed to free gRPC server: %s", e.what());
-        }
+        // 此处不再强制 Stop，调用方已在 cleanup 中显式停止并 unlink
+        delete server;
     }
 }
 

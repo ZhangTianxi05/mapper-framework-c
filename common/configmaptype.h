@@ -22,6 +22,11 @@ typedef struct {
 typedef struct {
     bool reportToCloud;   // Whether to report to the cloud
     int64_t reportCycle;  // Report cycle in seconds
+    char *status;
+    char *lastStatus;
+    long long lastUpdateTime;
+    int  healthCheckInterval;
+    int  statusChangeCount;
 } DeviceStatus;
 
 // ModelProperty stores device model property information.

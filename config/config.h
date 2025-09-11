@@ -20,10 +20,13 @@ typedef struct {
 } CommonConfig;
 
 typedef struct {
-    int  enabled;           // 0/1
-    char addr[128];         // 主机，不带端口
+    int  enabled;
+    char addr[128];
     char database[64];
     char username[64];
+    int  port;
+    char ssl_mode[16];   // 新增: ssl_mode (DISABLED / PREFERRED / REQUIRED...)
+    char password[64];
 } DatabaseMySQLConfig;
 
 typedef struct {

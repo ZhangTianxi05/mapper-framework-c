@@ -110,6 +110,12 @@ Config *config_parse(const char *filename)
                         strlcpy(cfg->database.mysql.database, (char *)token.data.scalar.value, sizeof(cfg->database.mysql.database));
                     } else if (strcmp(key, "username") == 0) {
                         strlcpy(cfg->database.mysql.username, (char *)token.data.scalar.value, sizeof(cfg->database.mysql.username));
+                    } else if (strcmp(key, "password") == 0) {
+                        strlcpy(cfg->database.mysql.password, (char *)token.data.scalar.value, sizeof(cfg->database.mysql.password));
+                    } else if (strcmp(key, "port") == 0) {
+                        cfg->database.mysql.port = atoi((char *)token.data.scalar.value);
+                    } else if (strcmp(key, "ssl_mode") == 0) {  // 新增解析
+                        strlcpy(cfg->database.mysql.ssl_mode, (char *)token.data.scalar.value, sizeof(cfg->database.mysql.ssl_mode));
                     }
                 }
                 yaml_token_delete(&token);

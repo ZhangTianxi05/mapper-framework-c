@@ -67,13 +67,11 @@ int devicetwin_deal(Device *device, const Twin *twin) {
 // 获取孪生属性值
 int devicetwin_get(Device *device, const char *propertyName, TwinResult *result) {
     if (!device || !propertyName || !result) return -1;
-    
+
     memset(result, 0, sizeof(TwinResult));
     result->timestamp = get_current_time_ms();
-    
-    log_debug("Getting twin property %s for device %s", propertyName, device->instance.name);
-    
-    // 查找对应的 twin 配置
+
+    // 查找 twin
     Twin *twin = NULL;
     for (int i = 0; i < device->instance.twinsCount; i++) {
         if (device->instance.twins[i].propertyName &&
@@ -82,42 +80,37 @@ int devicetwin_get(Device *device, const char *propertyName, TwinResult *result)
             break;
         }
     }
-    
-    if (!twin || !twin->property) {
-        result->error = strdup("Property not found or not configured");
+
+    if (!twin) {
+        result->error = strdup("Property not found");
         return -1;
     }
-    
-    // 构建访问配置
-    VisitorConfig visitorConfig = {0};
+
+    // 优先直接返回已轮询的 reported 值
+    if (twin->reported.value) {
+        result->value = strdup(twin->reported.value);
+        result->success = 1;
+        return 0;
+    }
+
+    // 没 property 也继续（放宽）
+    VisitorConfig visitorConfig = (VisitorConfig){0};
     visitorConfig.propertyName = (char*)propertyName;
     visitorConfig.protocolName = device->instance.protocolName;
-    
-    // 注意：DeviceProperty 可能没有 pVisitor 字段，使用 visitors 字段代替
-    if (twin->property->visitors) {
+    if (twin->property && twin->property->visitors) {
         visitorConfig.configData = twin->property->visitors;
     }
-    
-    // 从设备读取数据
+
     void *deviceData = NULL;
     int ret = GetDeviceData(device->client, &visitorConfig, &deviceData);
     if (ret != 0 || !deviceData) {
         result->error = strdup("Failed to read device data");
         return -1;
     }
-    
-    // 转换数据类型
-    char *convertedValue = NULL;
-    if (devicetwin_convert_data(twin, (char*)deviceData, &convertedValue) == 0) {
-        result->value = convertedValue;
-    } else {
-        result->value = strdup((char*)deviceData);
-    }
-    
-    result->success = 1;
+
+    result->value = strdup((char*)deviceData);
     free(deviceData);
-    
-    log_debug("Got twin property %s value: %s", propertyName, result->value);
+    result->success = 1;
     return 0;
 }
 

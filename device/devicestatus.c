@@ -1,60 +1,87 @@
-#ifndef DEVICE_DEVICESTATUS_H
-#define DEVICE_DEVICESTATUS_H
-
+#include "device/devicestatus.h"
+#include "device/device.h"
 #include "common/const.h"
-#include "common/eventtype.h"
-#include <pthread.h>        // 添加这个头文件
+#include "log/log.h"
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
 
-// 前置声明
-typedef struct Device Device;
+static long long now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return (long long)ts.tv_sec * 1000LL + ts.tv_nsec / 1000000LL;
+}
 
-// 重命名为避免与 common/configmaptype.h 中的冲突
-typedef struct {
-    char *status;                      // 当前状态
-    char *lastStatus;                  // 上次状态
-    long long lastUpdateTime;          // 上次更新时间
-    int healthCheckInterval;           // 健康检查间隔(秒)
-    int statusChangeCount;             // 状态变更次数
-} DeviceStatusInfo;
+int device_status_update(Device *device, const char *newStatus) {
+    if (!device) return -1;
+    if (!newStatus || !*newStatus) newStatus = DEVICE_STATUS_UNKNOWN;
+    if (!device->status) {
+        device->status = strdup(newStatus);
+        log_info("Device %s status init -> %s",
+                 device->instance.name ? device->instance.name : "(null)", newStatus);
+        return 0;
+    }
+    if (strcmp(device->status, newStatus) == 0) return 0;
+    char *old = device->status;
+    device->status = strdup(newStatus);
+    log_info("Device %s status %s -> %s",
+             device->instance.name ? device->instance.name : "(null)",
+             old, newStatus);
+    free(old);
+    return 0;
+}
 
-// 设备状态管理器
-typedef struct {
-    DeviceStatusInfo **statusList;     // 状态列表
-    int statusCount;                   // 状态数量
-    int capacity;                      // 容量
-    pthread_mutex_t statusMutex;       // 状态锁
-    pthread_t healthCheckThread;       // 健康检查线程
-    int healthCheckRunning;            // 健康检查运行标志
-} DeviceStatusManager;
+const char *device_status_get_current(Device *device) {
+    if (!device || !device->status) return DEVICE_STATUS_UNKNOWN;
+    return device->status;
+}
 
-// 设备状态操作
-DeviceStatusInfo *device_status_new(const char *initialStatus);
-void device_status_free(DeviceStatusInfo *status);
+int device_status_check_change(Device *device, const char *currentStatus) {
+    if (!device || !currentStatus) return -1;
+    if (!device->status) return 1;
+    return strcmp(device->status, currentStatus) != 0;
+}
 
-// 状态更新
-int device_status_update(Device *device, const char *newStatus);
-int device_status_check_change(Device *device, const char *currentStatus);
+int device_status_handle_offline(Device *device) {
+    return device_status_update(device, DEVICE_STATUS_OFFLINE);
+}
 
-// 状态查询
-const char *device_status_get_current(Device *device);
-const char *device_status_get_last(Device *device);
-long long device_status_get_last_update_time(Device *device);
+int device_status_handle_online(Device *device) {
+    return device_status_update(device, DEVICE_STATUS_OK);
+}
 
-// 健康检查
-int device_status_health_check(Device *device);
-int device_status_start_health_monitor(Device *device);
-int device_status_stop_health_monitor(Device *device);
+/* 占位实现 */
+long long device_status_get_last_update_time(Device *device) {
+    (void)device;
+    return now_ms();
+}
 
-// 状态管理器
-DeviceStatusManager *device_status_manager_new(void);
-void device_status_manager_free(DeviceStatusManager *manager);
-int device_status_manager_add(DeviceStatusManager *manager, Device *device);
-int device_status_manager_remove(DeviceStatusManager *manager, const char *deviceId);
-int device_status_manager_update_all(DeviceStatusManager *manager);
+int device_status_start_health_monitor(Device *device) {
+    (void)device;
+    return 0;
+}
 
-// 状态事件处理
-int device_status_send_event(Device *device, const char *eventType, const char *message);
-int device_status_handle_offline(Device *device);
-int device_status_handle_online(Device *device);
+int device_status_stop_health_monitor(Device *device) {
+    (void)device;
+    return 0;
+}
 
-#endif // DEVICE_DEVICESTATUS_H
+int device_status_health_check(Device *device) {
+    (void)device;
+    return 0;
+}
+
+int device_status_send_event(Device *device, const char *eventType, const char *message) {
+    log_info("Device %s event %s: %s",
+             device && device->instance.name ? device->instance.name : "(null)",
+             eventType ? eventType : "(nil)",
+             message ? message : "");
+    return 0;
+}
+int device_set_status(Device *device, const char *newStatus) {
+    return device_status_update(device, newStatus);
+}
+
+const char *device_get_status(Device *device) {
+    return device_status_get_current(device);
+}
