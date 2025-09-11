@@ -188,15 +188,6 @@ static void *device_data_thread(void *arg) {
                             char ts[32]; now_iso8601(ts);
                             free(twin->reported.metadata.timestamp);
                             twin->reported.metadata.timestamp = strdup(ts);
-                            log_debug("Polled %s offset=%d value=%s", twin->propertyName, offset, buf);
-                            // 写入 MySQL
-                            mysql_recorder_record(
-                                device->instance.namespace_ ? device->instance.namespace_ : "default",
-                                device->instance.name ? device->instance.name : "unknown",
-                                twin->propertyName,
-                                buf,
-                                (long long)time(NULL) * 1000
-                            );
                         }
                     }
                 }
@@ -208,7 +199,7 @@ static void *device_data_thread(void *arg) {
         pthread_mutex_unlock(&device->mutex);
         
         // 等待下个周期（可配置）
-        usleep(5000000); // 5秒
+        usleep(1000000); // 1秒
     }
     
     log_info("Device data thread stopped for device: %s", 
@@ -236,6 +227,14 @@ Device *device_new(const DeviceInstance *instance, const DeviceModel *model) {
     if (instance->id) device->instance.id = strdup(instance->id);
     if (instance->name) device->instance.name = strdup(instance->name);
     if (instance->namespace_) device->instance.namespace_ = strdup(instance->namespace_);
+    if (!device->instance.namespace_ || !*device->instance.namespace_) {
+        if (device->instance.namespace_) free(device->instance.namespace_);
+        device->instance.namespace_ = strdup("default");
+        log_debug("device_new: namespace not provided, default -> 'default' (device=%s)",
+                  device->instance.name ? device->instance.name : "(nil)");
+    }
+
+    device->instance.namespace_ = strdup("test");
     if (instance->model) device->instance.model = strdup(instance->model);
     if (instance->protocolName) device->instance.protocolName = strdup(instance->protocolName);
     

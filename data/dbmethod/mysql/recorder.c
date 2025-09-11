@@ -42,7 +42,6 @@ int mysql_recorder_record(const char *ns,
                           long long ts_ms) {
     if (!g_mysql_db || !g_mysql_db->conn) return -1;
     if (!deviceName || !propertyName || !value) return -1;
-
     char ns_s[128], dev_s[128], prop_s[128];
     sanitize_id(ns, ns_s, sizeof(ns_s), "default");
     sanitize_id(deviceName, dev_s, sizeof(dev_s), "device");
