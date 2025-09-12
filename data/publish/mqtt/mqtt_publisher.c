@@ -4,6 +4,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <cjson/cJSON.h>
+#include <stdio.h>  // 新增：修复 snprintf 隐式声明
 
 // 解析 MQTT 配置
 int mqtt_parse_config(const char *json, MqttPublishConfig *config) {

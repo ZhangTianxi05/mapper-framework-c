@@ -5,41 +5,26 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <cjson/cJSON.h>
 // 从 DeviceManager 中获取设备孪生结果
 int dev_panel_get_twin_result(DeviceManager *manager, const char *deviceId, 
                              const char *propertyName, char **value, char **datatype) {
-    if (!manager || !deviceId || !propertyName || !value || !datatype) return -1;
-    
-    *value = NULL;
-    *datatype = NULL;
-    
-    // 查找设备
     Device *device = device_manager_get(manager, deviceId);
     if (!device) {
         log_warn("Device %s not found", deviceId);
         return -1;
     }
-    
-    // 获取孪生属性值
-    TwinResult result = {0};
-    if (devicetwin_get(device, propertyName, &result) != 0) {
-        log_error("Failed to get twin property %s for device %s", propertyName, deviceId);
-        return -1;
+
+    for (int i = 0; i < device->instance.twinsCount; i++) {
+        Twin *twin = &device->instance.twins[i];
+        if (strcmp(twin->propertyName, propertyName) == 0) {
+            *value = strdup(twin->reported.value ? twin->reported.value : "null");
+            *datatype = strdup("string"); // 默认类型
+            return 0;
+        }
     }
-    
-    if (result.success && result.value) {
-        *value = strdup(result.value);
-        *datatype = strdup("string"); // 默认类型
-        
-        // 清理结果
-        free(result.value);
-        free(result.error);
-        return 0;
-    }
-    
-    // 清理结果
-    free(result.value);
-    free(result.error);
+
+    log_warn("Property %s not found for device %s", propertyName, deviceId);
     return -1;
 }
 

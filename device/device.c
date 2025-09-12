@@ -1,7 +1,8 @@
 #include "device.h"
 #include "log/log.h"
 #include "common/const.h"
-#include "data/dbmethod/mysql/recorder.h"
+#include "data/publish/publisher.h"   // 新增
+#include "data/dbmethod/mysql/recorder.h"  // 新增：修复 mysql_recorder_record 隐式声明
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -9,6 +10,11 @@
 #include <unistd.h>
 #include <time.h>
 #include <ctype.h>
+extern Publisher *g_publisher;
+static int sim_temperature_enabled(void) {
+    const char *v = getenv("MAPPER_SIM_TEMPERATURE");
+    return v && (*v=='1' || strcasecmp(v,"true")==0 || strcasecmp(v,"on")==0);
+}
 
 // ==== Helpers moved to top (避免隐式声明) ====
 static int json_get_str(const char *json, const char *key, char *out, size_t outsz) {
@@ -55,20 +61,6 @@ static int resolve_offset_by_name(const char *propName) {
     if (strcmp(propName, "temperature") == 0) return 1;
     if (strcmp(propName, "threshold") == 0)  return 2;
     return -1;
-}
-static int modbus_read_holding(const char *ip, int port, int offset, int *outVal) {
-    if (!ip || offset <= 0 || !outVal) return -1;
-    char cmd[256];
-    snprintf(cmd, sizeof(cmd),
-             "/usr/bin/mbpoll -1 -m tcp %s -p %d -a 1 -t 4 -r %d -c 1 2>/dev/null | tail -n1 | awk '{print $NF}'",
-             ip, port, offset);
-    FILE *fp = popen(cmd, "r");
-    if (!fp) return -1;
-    char buf[64] = {0};
-    if (!fgets(buf, sizeof(buf), fp)) { pclose(fp); return -1; }
-    pclose(fp);
-    *outVal = atoi(buf);
-    return 0;
 }
 // ==== End helpers ====
 
@@ -146,63 +138,81 @@ static void normalize_host_port(const char *rawHost, int rawPort,
     *outPort = p;
 }
 
+// 模拟温度数据
+static int simulate_temperature_data(int *current, int *direction) {
+    if (!current || !direction) return -1;
+
+    // 如果到达边界，反转方向
+    if (*current >= 100) {
+        *direction = -1;
+    } else if (*current <= 1) {
+        *direction = 1;
+    }
+
+    // 根据方向更新当前值
+    *current += *direction;
+    return *current;
+}
+
 // 设备数据处理线程
 static void *device_data_thread(void *arg) {
     Device *device = (Device*)arg;
-    
-    log_info("Device data thread started for device: %s", 
+    log_info("Device data thread started for device: %s",
              device->instance.name ? device->instance.name : "unknown");
-    
+
+    int simulated_temperature = 1; // 初始温度
+    int direction = 1; // 1 表示升温，-1 表示降温
+
     while (device->dataThreadRunning) {
         pthread_mutex_lock(&device->mutex);
-        
-        // 检查设备状态
+
         if (strcmp(device->status, DEVICE_STATUS_OK) != 0) {
             pthread_mutex_unlock(&device->mutex);
-            usleep(1000000); // 1秒
+            usleep(1000000);
             continue;
         }
-        
-        // 处理设备 twins 数据
+
         for (int i = 0; i < device->instance.twinsCount; i++) {
             Twin *twin = &device->instance.twins[i];
-            if (twin && twin->propertyName) {
-                // 周期采集：读取寄存器当前值并回填 reported（不依赖 desired）
-                int offset = resolve_offset_by_name(twin->propertyName);
-                if (offset > 0) {
-                    char ip[64] = "127.0.0.1";
-                    int mbport = 1502;
-                    if (device->instance.pProtocol.configData) {
-                        json_get_str(device->instance.pProtocol.configData, "ip", ip, sizeof(ip));
-                        json_get_int(device->instance.pProtocol.configData, "port", &mbport);
-                        cleanup_escape_prefix(ip);   // 新增
-                    }
-                    int val = 0;
-                    if (modbus_read_holding(ip, mbport, offset, &val) == 0) {
-                        char buf[32];
-                        snprintf(buf, sizeof(buf), "%d", val);
-                        // 如果 reported 不存在或值不同则更新
-                        if (!twin->reported.value || strcmp(twin->reported.value, buf) != 0) {
-                            free(twin->reported.value);
-                            twin->reported.value = strdup(buf);
-                            char ts[32]; now_iso8601(ts);
-                            free(twin->reported.metadata.timestamp);
-                            twin->reported.metadata.timestamp = strdup(ts);
-                        }
-                    }
+            if (!twin || !twin->propertyName) continue;
+
+            if (strcmp(twin->propertyName, "temperature") == 0 && sim_temperature_enabled()) {
+                int simulated_value = simulate_temperature_data(&simulated_temperature, &direction);
+                char buf[32];
+                snprintf(buf, sizeof(buf), "%d", simulated_value);
+
+                // 更新 reported（即使未变化也可保留，只在变化时减内存 churn）
+                if (!twin->reported.value || strcmp(twin->reported.value, buf) != 0) {
+                    free(twin->reported.value);
+                    twin->reported.value = strdup(buf);
+                    char ts[32]; now_iso8601(ts);
+                    free(twin->reported.metadata.timestamp);
+                    twin->reported.metadata.timestamp = strdup(ts);
+                    log_debug("Updated reported.value for %s: %s", twin->propertyName, buf);
                 }
-                // 仍保留处理 desired 的逻辑
-                device_deal_twin(device, twin);
+
+                // 无条件写库（如需只变化时写可再加判断）
+                mysql_recorder_record(
+                    device->instance.namespace_ ? device->instance.namespace_ : "default",
+                    device->instance.name ? device->instance.name : "unknown",
+                    twin->propertyName,
+                    twin->reported.value,
+                    (long long)time(NULL) * 1000
+                );
+
+                // 跳过 desired 处理避免被回写成云端旧值
+                continue;
             }
+
+            // 处理其他属性
+            device_deal_twin(device, twin);
         }
-        
+
         pthread_mutex_unlock(&device->mutex);
-        
-        // 等待下个周期（可配置）
-        usleep(1000000); // 1秒
+        usleep(5000000); // 5 秒采集周期
     }
-    
-    log_info("Device data thread stopped for device: %s", 
+
+    log_info("Device data thread stopped for device: %s",
              device->instance.name ? device->instance.name : "unknown");
     return NULL;
 }
@@ -594,7 +604,6 @@ static void device_runtime_rebuild(Device *device) {
     }
 }
 
-// 其余函数保持不变...
 // 启动设备
 int device_start(Device *device) {
     if (!device) return -1;
@@ -690,7 +699,7 @@ int device_restart(Device *device) {
     }
     
     // 等待一段时间
-    usleep(1000000); // 1秒
+    usleep(100000); // 1秒
     
     if (device_start(device) != 0) {
         log_error("Failed to start device %s during restart", device->instance.name);
@@ -706,6 +715,12 @@ int device_restart(Device *device) {
 int device_deal_twin(Device *device, const Twin *twin_in) {
     if (!device || !twin_in) return -1;
     Twin *twin = (Twin*)twin_in;
+
+    if (sim_temperature_enabled() && twin->propertyName &&
+        strcmp(twin->propertyName, "temperature") == 0) {
+        log_debug("Skip device_deal_twin for simulated temperature");
+        return 0;
+    }
 
     const char *prop = twin->propertyName ? twin->propertyName : "(null)";
     const char *desired = twin->observedDesired.value;
@@ -787,6 +802,18 @@ int device_deal_twin(Device *device, const Twin *twin_in) {
         desired,
         (long long)time(NULL) * 1000
     );
+    // 同步发布
+    if (g_publisher) {
+        DataModel dm = (DataModel){0};
+        dm.namespace_   = device->instance.namespace_ ? device->instance.namespace_ : "default";
+        dm.deviceName   = device->instance.name ? device->instance.name : "unknown";
+        dm.propertyName = twin->propertyName ? twin->propertyName : "unknown";
+        dm.type         = "string";
+        dm.value        = (char*)desired;   // 去掉 const 警告
+        dm.timeStamp    = (int64_t)time(NULL) * 1000;
+        int prc = publisher_publish_data(g_publisher, &dm);
+        if (prc != 0) log_warn("Publish failed (write success) for %s", dm.propertyName);
+    }
     return 0;
 }
 
@@ -970,3 +997,4 @@ int device_register_to_edge(Device *device) {
     log_info("Device %s registered to edge core", device->instance.name);
     return 0;
 }
+

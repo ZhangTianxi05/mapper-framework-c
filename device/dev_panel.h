@@ -30,6 +30,7 @@ int dev_panel_get_device(DeviceManager *manager, const char *deviceId, DeviceIns
 // 获取设备模型
 int dev_panel_get_model(DeviceManager *manager, const char *modelId, DeviceModel *model);
 
+int dev_panel_get_all_twins(DeviceManager *manager, char **response);
 // 检查设备是否存在
 int dev_panel_has_device(DeviceManager *manager, const char *deviceId);
 

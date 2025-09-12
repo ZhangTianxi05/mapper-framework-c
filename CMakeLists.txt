@@ -10,19 +10,17 @@ find_package(CURL REQUIRED)
 find_package(Threads REQUIRED)
 
 # Protobuf / gRPC
-# 优先用 CMake targets，找不到时走库名回退
 find_package(Protobuf CONFIG QUIET)
 if(NOT Protobuf_FOUND)
   find_package(Protobuf REQUIRED)
 endif()
-
 find_package(gRPC CONFIG QUIET)
 
 # FFmpeg（可选）
-pkg_check_modules(FFMPEG 
-  libavformat 
-  libavcodec 
-  libavutil 
+pkg_check_modules(FFMPEG
+  libavformat
+  libavcodec
+  libavutil
   libswscale
 )
 if(NOT FFMPEG_FOUND)
@@ -55,13 +53,26 @@ else()
   set(TAOS_FOUND TRUE)
 endif()
 
-# 头文件目录
+# cJSON / protobuf-c 头文件
 include_directories(/usr/include/cjson)
 include_directories(/usr/local/include/protobuf-c)
-
 set(CJSON_LIBRARIES cjson)
 set(PROTOBUF_C_LIBRARIES protobuf-c)
 
+# Mosquitto（MQTT，可选）
+find_path(MOSQUITTO_INCLUDE_DIR mosquitto.h
+  PATHS /usr/include /usr/local/include)
+find_library(MOSQUITTO_LIBRARY mosquitto
+  PATHS /usr/lib /usr/local/lib /usr/lib/x86_64-linux-gnu)
+if(MOSQUITTO_INCLUDE_DIR AND MOSQUITTO_LIBRARY)
+  set(MOSQUITTO_FOUND TRUE)
+  message(STATUS "Found Mosquitto: ${MOSQUITTO_LIBRARY}")
+else()
+  set(MOSQUITTO_FOUND FALSE)
+  message(WARNING "Mosquitto not found. MQTT publish will be disabled.")
+endif()
+
+# 头文件目录
 include_directories(
   ${YAML_INCLUDE_DIRS}
   ${PROTOBUF_C_INCLUDE_DIRS}
@@ -80,10 +91,18 @@ include_directories(
   ${CMAKE_CURRENT_SOURCE_DIR}/data/dbmethod/mysql
   ${CMAKE_CURRENT_SOURCE_DIR}/data/dbmethod/influxdb2
   ${CMAKE_CURRENT_SOURCE_DIR}/data/dbmethod/redis
+  ${CMAKE_CURRENT_SOURCE_DIR}/data/publish
+  ${CMAKE_CURRENT_SOURCE_DIR}/data/publish/http
+  ${CMAKE_CURRENT_SOURCE_DIR}/data/publish/otel
   ${CMAKE_CURRENT_SOURCE_DIR}/driver
   /usr/include
   /usr/local/include
 )
+
+if(MOSQUITTO_FOUND)
+  include_directories(${MOSQUITTO_INCLUDE_DIR})
+  include_directories(${CMAKE_CURRENT_SOURCE_DIR}/data/publish/mqtt)
+endif()
 
 if(TAOS_FOUND)
   include_directories(${TAOS_INCLUDE_DIR})
@@ -145,20 +164,33 @@ set(COMMON_SOURCES
   driver/driver.c
   # 数据库客户端
   data/dbmethod/mysql/mysql_client.c
-  data/dbmethod/mysql/recorder.c          # 新增
+  data/dbmethod/mysql/recorder.c
   data/dbmethod/influxdb2/influxdb2_client.c
   data/dbmethod/redis/redis_client.c
+  # 发布模块（统一入口 + HTTP/OTEL，MQTT 按需追加）
+  data/publish/publisher.c
+  data/publish/http/http_publisher.c
+  data/publish/otel/otel_publisher.c
 )
 
+# 可选 TDengine
 if(TAOS_FOUND)
   list(APPEND COMMON_SOURCES
     data/dbmethod/tdengine/tdengine_client.c
   )
 endif()
 
+# 可选 Stream
 if(STREAM_FOUND)
   list(APPEND COMMON_SOURCES
     data/stream/stream.c
+  )
+endif()
+
+# 可选 MQTT 发布
+if(MOSQUITTO_FOUND)
+  list(APPEND COMMON_SOURCES
+    data/publish/mqtt/mqtt_publisher.c
   )
 endif()
 
@@ -166,6 +198,7 @@ endif()
 add_compile_definitions(
   $<$<BOOL:${TAOS_FOUND}>:TAOS_FOUND>
   $<$<BOOL:${STREAM_FOUND}>:ENABLE_STREAM>
+  $<$<BOOL:${MOSQUITTO_FOUND}>:ENABLE_MQTT_PUBLISH>
 )
 
 # 主程序
@@ -182,18 +215,16 @@ if(TARGET gRPC::grpc++)
   list(APPEND GRPC_LINK_LIBS
     gRPC::grpc++
     gRPC::grpc
-    gRPC::gpr
+    gpr
     gRPC::grpc++_reflection
   )
 else()
-  # 回退库名
   list(APPEND GRPC_LINK_LIBS
     grpc++
     grpc
     gpr
     grpc++_reflection
   )
-  # 回退时 absl 可能需要
   list(APPEND GRPC_LINK_LIBS ${ABSL_LIBS})
 endif()
 
@@ -228,6 +259,10 @@ if(STREAM_FOUND)
   list(APPEND COMMON_LIBRARIES ${FFMPEG_LIBRARIES})
 endif()
 
+if(MOSQUITTO_FOUND)
+  list(APPEND COMMON_LIBRARIES ${MOSQUITTO_LIBRARY})
+endif()
+
 target_link_libraries(main PRIVATE ${COMMON_LIBRARIES})
 
 # 编译器选项
@@ -240,22 +275,6 @@ target_compile_options(main PRIVATE
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/config.yaml
                ${CMAKE_CURRENT_BINARY_DIR}/config.yaml
                COPYONLY)
-
-# 测试程序
-if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test)
-  file(GLOB TEST_SRC test/*.c)
-  foreach(testfile ${TEST_SRC})
-    get_filename_component(testname ${testfile} NAME_WE)
-    add_executable(${testname} ${testfile}
-      ${COMMON_SOURCES}
-    )
-    target_link_libraries(${testname} PRIVATE ${COMMON_LIBRARIES})
-    target_compile_options(${testname} PRIVATE
-      $<$<COMPILE_LANGUAGE:C>:-Wall -Wextra -Wno-unused-parameter>
-      $<$<COMPILE_LANGUAGE:CXX>:-Wall -Wextra -Wno-unused-parameter>
-    )
-  endforeach()
-endif()
 
 # 示例程序
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/examples)
@@ -274,7 +293,7 @@ install(TARGETS main
   RUNTIME DESTINATION bin
 )
 
-install(DIRECTORY 
+install(DIRECTORY
   common/
   config/
   log/
@@ -297,7 +316,7 @@ message(STATUS "Device Management: YES")
 message(STATUS "HTTP Server: YES")
 message(STATUS "GRPC Server: YES")
 message(STATUS "MySQL: YES")
-message(STATUS "InfluxDB2: YES") 
+message(STATUS "InfluxDB2: YES")
 message(STATUS "Redis: YES")
 if(TAOS_FOUND)
   message(STATUS "TDengine: YES")
@@ -308,6 +327,11 @@ if(STREAM_FOUND)
   message(STATUS "Stream Processing: YES (FFmpeg)")
 else()
   message(STATUS "Stream Processing: NO (FFmpeg not found)")
+endif()
+if(MOSQUITTO_FOUND)
+  message(STATUS "MQTT Publish: YES")
+else()
+  message(STATUS "MQTT Publish: NO (mosquitto not found)")
 endif()
 message(STATUS "")
 message(STATUS "=== Source Files Summary ===")

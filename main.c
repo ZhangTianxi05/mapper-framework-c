@@ -22,12 +22,15 @@
 #include "common/const.h"
 #include "data/dbmethod/mysql/mysql_client.h"  // 新增
 #include "data/dbmethod/mysql/recorder.h"   // 新增
+#include "data/publish/publisher.h"   // 新增
 
 static volatile int running = 1;
 static DeviceManager *g_deviceManager = NULL;
 static GrpcServer *g_grpcServer = NULL;          
 static RestServer *g_httpServer = NULL;          
 static MySQLDataBaseConfig *g_mysql = NULL;    // 新增
+// 全局发布器定义（与 device.c 的 extern 对应）
+Publisher *g_publisher = NULL;
 static pthread_t g_grpcThread = 0;
 static char g_grpcSockPath[PATH_MAX] = {0};
 // 新增：设备启动线程句柄
@@ -138,6 +141,13 @@ static void cleanup_resources(void) {
     }
     log_info("[cleanup] MySQL done");
 
+    // 5) Publisher
+    if (g_publisher) {
+        publisher_free(g_publisher);
+        g_publisher = NULL;
+        log_info("[cleanup] publisher freed");
+    }
+
     log_info("Cleanup completed");
 }
 
@@ -168,7 +178,7 @@ static int wait_uds_ready(const char *path, int timeout_ms) {
     return -1;
 }
 
-int main(int argc, char *argv[]) {
+int main(int argc, char **argv) {
     int ret = 0;
     Config *config = NULL;
     DeviceInstance *deviceList = NULL;
@@ -265,6 +275,21 @@ int main(int argc, char *argv[]) {
         }
     } else {
         log_info("MySQL disabled in config");
+    }
+
+    // 初始化 Publisher（通过环境变量）
+    const char *pm = getenv("PUBLISH_METHOD");     // http | mqtt | otel
+    const char *pc = getenv("PUBLISH_CONFIG");     // 对应通道 JSON
+    if (pm && *pm && pc && *pc) {
+        PublishMethodType t = publisher_get_type_from_string(pm);
+        g_publisher = publisher_new(t, pc);
+        if (g_publisher) {
+            log_info("Publish channel ready: %s", pm);
+        } else {
+            log_warn("Failed to init publish channel: %s", pm);
+        }
+    } else {
+        log_info("Publish channel disabled (set PUBLISH_METHOD and PUBLISH_CONFIG to enable)");
     }
 
     // 先创建 DeviceManager（供 gRPC 回调使用）
@@ -415,5 +440,5 @@ cleanup:
     
     log_info("=== Mapper shutdown completed ===");
     
-    return ret;
+    return 0;
 }
